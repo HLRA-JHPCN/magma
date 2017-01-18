@@ -81,9 +81,9 @@ int main( int argc, char** argv)
     fscanf(fp, "%d\n",&num_sizes);
     opts.ntest = num_sizes;
     opts.niter = 1;
-    int avg_gflops = 0;
-    int tot_flops  = 0;
-    int tot_times  = 0;
+    real_Double_t tot_flops  = 0;
+    real_Double_t avg_gflops = 0;
+    real_Double_t tot_times  = 0;
     int *flops = (int*)malloc(num_sizes * sizeof(int));
     int *times = (int*)malloc(num_sizes * sizeof(int));
 #endif
@@ -247,7 +247,8 @@ int main( int argc, char** argv)
         }
     }
 #if defined(FROM_SORTED_FILE)
-    printf( " tot_gflops=%d, tot_times=%d, avg_gflop/s=%d\n",tot_flops,tot_times,avg_gflops );
+    printf( "\n tot_gflops/tot_time = %.2e/%.2e = %.2e, avg_gflop/s=%.2e\n\n",
+            tot_flops, tot_times, tot_flops/tot_times, avg_gflops/opts.ntest );
     free(flops); free(times);
     fclose(fp);
 #endif

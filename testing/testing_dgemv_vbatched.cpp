@@ -417,7 +417,7 @@ int main( int argc, char** argv)
             printf( "\n" );
         }
     }
-    printf( " Total time: %.2e seconds on a GPU, %.2e seconds with CPUs\n",total_gpu,total_cpu );
+    printf( "\n Total time: %.2e seconds on a GPU, %.2e seconds with CPUs\n\n",total_gpu,total_cpu );
 #if defined(FROM_FILE) | defined(FROM_SORTED_FILE)
     #if defined(SORT_SIZES)
     free(sizes);
