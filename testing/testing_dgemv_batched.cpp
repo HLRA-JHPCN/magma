@@ -76,9 +76,9 @@ int main( int argc, char** argv)
 #define FROM_SORTED_FILE
 #if defined(FROM_SORTED_FILE)
     int batchCount_0 = batchCount;
-    int num_sizes;
+    int nlf, num_sizes;
     FILE *fp = fopen("sizes_sorted.dat","r");
-    fscanf(fp, "%d\n",&num_sizes);
+    fscanf(fp, "%d %d\n",&nlf,&num_sizes);
     opts.ntest = num_sizes;
     opts.niter = 1;
     real_Double_t tot_flops  = 0;

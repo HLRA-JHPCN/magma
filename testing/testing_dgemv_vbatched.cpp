@@ -172,11 +172,12 @@ int main( int argc, char** argv)
     #endif
 #elif defined(FROM_SORTED_FILE)
     int batchCount_0 = batchCount;
-    int num_sizes;
+    int nlf,num_sizes;
     FILE *fp = fopen("sizes_sorted.dat","r");
-    fscanf(fp, "%d\n",&num_sizes);
+    fscanf(fp, "%d %d\n",&nlf,&num_sizes);
     opts.ntest = magma_ceildiv(num_sizes, batchCount);
     opts.niter = 1;
+    int total_batched = 0;
 #endif
     double total_gpu = 0.0, total_cpu = 0.0;
     for( int itest = 0; itest < opts.ntest; ++itest ) {
@@ -201,8 +202,14 @@ int main( int argc, char** argv)
             max_M = max_N = 0;
             total_size_A_cpu = total_size_A_dev = 0;
             total_size_X = total_size_Y = 0;
-#if defined(FROM_FILE) | defined(FROM_SORTED_FILE)
+#if defined(FROM_FILE)
             batchCount = min(batchCount_0, num_sizes - batchCount_0*itest);
+#elif defined(FROM_SORTED_FILE)
+            if (total_batched < nlf) {
+                batchCount = min(batchCount_0, nlf - total_batched);
+            } else {
+                batchCount = min(batchCount_0, num_sizes - total_batched);
+            }
 #endif
             for (int i = 0; i < batchCount; i++) {
 #if defined(FROM_FILE) | defined(FROM_SORTED_FILE)
@@ -416,6 +423,9 @@ int main( int argc, char** argv)
         if ( opts.niter > 1 ) {
             printf( "\n" );
         }
+#if defined(FROM_SORTED_FILE)
+        total_batched += batchCount;
+#endif
     }
     printf( "\n Total time: %.2e seconds on a GPU, %.2e seconds with CPUs\n\n",total_gpu,total_cpu );
 #if defined(FROM_FILE) | defined(FROM_SORTED_FILE)
