@@ -172,10 +172,12 @@ int main( int argc, char** argv)
     #endif
 #elif defined(FROM_SORTED_FILE)
     int batchCount_0 = batchCount;
-    int num_sizes;
+    int num_sizes, nlf;
     FILE *fp = fopen("sizes_sorted.dat","r");
-    fscanf(fp, "%d\n",&num_sizes);
-    opts.ntest = magma_ceildiv(num_sizes, batchCount);
+    fscanf(fp, "%d %d\n",&num_sizes,&nlf);
+    int ntest1 = magma_ceildiv(nlf, batchCount);
+    int ntest2 = magma_ceildiv(num_sizes-nlf, batchCount);
+    opts.ntest = ntest1+ntest2;
     opts.niter = 1;
 #endif
     double total_gpu = 0.0, total_cpu = 0.0;
@@ -202,7 +204,11 @@ int main( int argc, char** argv)
             total_size_A_cpu = total_size_A_dev = 0;
             total_size_X = total_size_Y = 0;
 #if defined(FROM_FILE) | defined(FROM_SORTED_FILE)
-            batchCount = min(batchCount_0, num_sizes - batchCount_0*itest);
+            if (itest < ntest1) {
+                batchCount = min(batchCount_0, nlf - batchCount_0*itest);
+            } else {
+                batchCount = min(batchCount_0, (num_sizes-nlf) - batchCount_0*(itest-ntest1));
+            }
 #endif
             for (int i = 0; i < batchCount; i++) {
 #if defined(FROM_FILE) | defined(FROM_SORTED_FILE)
