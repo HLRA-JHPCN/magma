@@ -28,6 +28,8 @@
 #include "../control/magma_threadsetting.h"  // internal header
 #endif
 
+#define imax(a, b) ((a) > (b) ? (a) : (b))
+
 /* ////////////////////////////////////////////////////////////////////////////
    -- Testing dgemv_batched
 */
@@ -75,20 +77,77 @@ int main( int argc, char** argv)
     printf("%%=============================================================================\n");
 #define FROM_SORTED_FILE
 #if defined(FROM_SORTED_FILE)
-    int batchCount_0 = batchCount;
-    int nlf, num_sizes;
+    int num_sizes, nlf;
     FILE *fp = fopen("sizes_sorted.dat","r");
-    fscanf(fp, "%d %d\n",&nlf,&num_sizes);
+    fscanf(fp, "%d %d\n",&num_sizes,&nlf);
     opts.ntest = num_sizes;
     opts.niter = 1;
+
     real_Double_t tot_flops  = 0;
     real_Double_t avg_gflops = 0;
     real_Double_t tot_times  = 0;
-    int *flops = (int*)malloc(num_sizes * sizeof(int));
-    int *times = (int*)malloc(num_sizes * sizeof(int));
+    double start;
+    double time0 = magma_sync_wtime( opts.queue );
+    double time1 = 0.0;
+    double time2 = 0.0;
+    double time3 = 0.0;
+    double time4 = 0.0;
+#endif
+
+#define MALLOC_ONCE
+#if defined(MALLOC_ONCE)
+    int sizeAd_max = 0;
+    int sizeA_max = 0;
+    int sizeX_max = 0;
+    int sizeY_max = 0;
+    for ( int itest = 0; itest < opts.ntest; ++itest ) {
+        int id;
+        fscanf(fp, "%d %d %d\n",&id,&N,&M);
+        if ( opts.transA == MagmaTrans ) {
+            int tmp = M;
+            M = N;
+            N = tmp;
+        }
+        lda = M;
+        if ( opts.transA == MagmaNoTrans ) {
+            Xm = N;
+            Ym = M;
+        }
+        else {
+            Xm = M;
+            Ym = N;
+        }
+        sizeAd_max = imax(sizeAd_max,ldda*N*batchCount);
+        sizeA_max  = imax(sizeA_max, lda*N*batchCount);
+        sizeX_max  = imax(sizeX_max, incx*Xm*batchCount);
+        sizeY_max  = imax(sizeY_max, incy*Ym*batchCount);
+    }
+
+    TESTING_CHECK( magma_dmalloc_cpu( &h_A,  sizeA_max ));
+    TESTING_CHECK( magma_dmalloc_cpu( &h_X,  sizeX_max ));
+    TESTING_CHECK( magma_dmalloc_cpu( &h_Y,  sizeY_max  ));
+    TESTING_CHECK( magma_dmalloc_cpu( &h_Ymagma,  sizeY_max  ));
+
+    TESTING_CHECK( magma_dmalloc( &d_A, sizeAd_max ));
+    TESTING_CHECK( magma_dmalloc( &d_X, sizeX_max ));
+    TESTING_CHECK( magma_dmalloc( &d_Y, sizeY_max ));
+
+    TESTING_CHECK( magma_malloc( (void**) &d_A_array, batchCount * sizeof(double*) ));
+    TESTING_CHECK( magma_malloc( (void**) &d_X_array, batchCount * sizeof(double*) ));
+    TESTING_CHECK( magma_malloc( (void**) &d_Y_array, batchCount * sizeof(double*) ));
+
+    /* Initialize the matrices */
+    lapackf77_dlarnv( &ione, ISEED, &sizeA_max, h_A );
+    lapackf77_dlarnv( &ione, ISEED, &sizeX_max, h_X );
+    lapackf77_dlarnv( &ione, ISEED, &sizeY_max, h_Y );
+    fclose(fp);
+
+    fp = fopen("sizes_sorted.dat","r");
+    fscanf(fp, "%d %d\n",&num_sizes,&nlf);
 #endif
     for( int itest = 0; itest < opts.ntest; ++itest ) {
         for( int iter = 0; iter < opts.niter; ++iter ) {
+            start = magma_sync_wtime( opts.queue );
             #if defined(FROM_SORTED_FILE)
             int id;
             fscanf(fp, "%d %d %d\n",&id,&N,&M);
@@ -118,6 +177,16 @@ int main( int argc, char** argv)
             sizeX = incx*Xm*batchCount;
             sizeY = incy*Ym*batchCount;
 
+            #if defined(MALLOC_ONCE)
+            assert(sizeA <= sizeA_max);
+            assert(sizeX <= sizeX_max);
+            assert(sizeY <= sizeY_max);
+            assert(ldda*N*batchCount <= sizeAd_max);
+            /* Initialize the matrices */
+            lapackf77_dlarnv( &ione, ISEED, &sizeA, h_A );
+            lapackf77_dlarnv( &ione, ISEED, &sizeX, h_X );
+            lapackf77_dlarnv( &ione, ISEED, &sizeY, h_Y );
+            #else
             TESTING_CHECK( magma_dmalloc_cpu( &h_A,  sizeA ));
             TESTING_CHECK( magma_dmalloc_cpu( &h_X,  sizeX ));
             TESTING_CHECK( magma_dmalloc_cpu( &h_Y,  sizeY  ));
@@ -135,17 +204,22 @@ int main( int argc, char** argv)
             lapackf77_dlarnv( &ione, ISEED, &sizeA, h_A );
             lapackf77_dlarnv( &ione, ISEED, &sizeX, h_X );
             lapackf77_dlarnv( &ione, ISEED, &sizeY, h_Y );
+            #endif
             
             // Compute norms for error
-            for (int s = 0; s < batchCount; ++s) {
-                Anorm[s] = lapackf77_dlange( "F", &M, &N,     &h_A[s*lda*N],   &lda,  work );
-                Xnorm[s] = lapackf77_dlange( "F", &ione, &Xm, &h_X[s*Xm*incx], &incx, work );
-                Ynorm[s] = lapackf77_dlange( "F", &ione, &Ym, &h_Y[s*Ym*incy], &incy, work );
+            if ( opts.lapack ) {
+                for (int s = 0; s < batchCount; ++s) {
+                    Anorm[s] = lapackf77_dlange( "F", &M, &N,     &h_A[s*lda*N],   &lda,  work );
+                    Xnorm[s] = lapackf77_dlange( "F", &ione, &Xm, &h_X[s*Xm*incx], &incx, work );
+                    Ynorm[s] = lapackf77_dlange( "F", &ione, &Ym, &h_Y[s*Ym*incy], &incy, work );
+                }
             }
+            time1 += (magma_sync_wtime( opts.queue )-start);
             
             /* =====================================================================
                Performs operation using MAGMABLAS
                =================================================================== */
+            start = magma_sync_wtime( opts.queue );
             magma_dsetmatrix( M, N*batchCount, h_A, lda, d_A, ldda, opts.queue );
             magma_dsetvector( Xm*batchCount, h_X, incx, d_X, incx, opts.queue );
             magma_dsetvector( Ym*batchCount, h_Y, incy, d_Y, incy, opts.queue );
@@ -153,6 +227,7 @@ int main( int argc, char** argv)
             magma_dset_pointer( d_A_array, d_A, ldda, 0, 0, ldda*N, batchCount, opts.queue );
             magma_dset_pointer( d_X_array, d_X, 1, 0, 0, incx*Xm, batchCount, opts.queue );
             magma_dset_pointer( d_Y_array, d_Y, 1, 0, 0, incy*Ym, batchCount, opts.queue );
+            time2 += (magma_sync_wtime( opts.queue )-start);
 
             magma_time = magma_sync_wtime( opts.queue );
             magmablas_dgemv_batched(opts.transA, M, N,
@@ -161,13 +236,17 @@ int main( int argc, char** argv)
                              beta,  d_Y_array, incy, batchCount, opts.queue);
             magma_time = magma_sync_wtime( opts.queue ) - magma_time;
             magma_perf = gflops / magma_time;
-            magma_dgetvector( Ym*batchCount, d_Y, incy, h_Ymagma, incy, opts.queue );
+            time3 += magma_time;
+
+            start = magma_sync_wtime( opts.queue );
+            if ( opts.lapack ) {
+                magma_dgetvector( Ym*batchCount, d_Y, incy, h_Ymagma, incy, opts.queue );
+            }
+            time4 += (magma_sync_wtime( opts.queue )-start);
             #if defined(FROM_SORTED_FILE)
             avg_gflops+= magma_perf;
             tot_flops += gflops;
             tot_times += magma_time;
-            flops[itest] = gflops;
-            times[itest] = magma_time;
             #endif
             
             /* =====================================================================
@@ -227,7 +306,10 @@ int main( int argc, char** argv)
                        (long long) batchCount, (long long) M, (long long) N,
                        magma_perf,  1000.*magma_time);
             }
+            //printf( " %7.2f: %7.2f %7.2f %7.2f %7.2f\n",magma_sync_wtime( opts.queue )-time0,
+            //        time1,time2,time3,time4);
             
+            #if !defined(MALLOC_ONCE)
             magma_free_cpu( h_A );
             magma_free_cpu( h_X );
             magma_free_cpu( h_Y );
@@ -239,6 +321,7 @@ int main( int argc, char** argv)
             magma_free( d_A_array );
             magma_free( d_X_array );
             magma_free( d_Y_array );
+            #endif
 
             fflush( stdout);
         }
@@ -246,10 +329,24 @@ int main( int argc, char** argv)
             printf( "\n" );
         }
     }
+            
+#if defined(MALLOC_ONCE)
+    magma_free_cpu( h_A );
+    magma_free_cpu( h_X );
+    magma_free_cpu( h_Y );
+    magma_free_cpu( h_Ymagma );
+
+    magma_free( d_A );
+    magma_free( d_X );
+    magma_free( d_Y );
+    magma_free( d_A_array );
+    magma_free( d_X_array );
+    magma_free( d_Y_array );
+#endif
+
 #if defined(FROM_SORTED_FILE)
     printf( "\n tot_gflops/tot_time = %.2e/%.2e = %.2e, avg_gflop/s=%.2e\n\n",
             tot_flops, tot_times, tot_flops/tot_times, avg_gflops/opts.ntest );
-    free(flops); free(times);
     fclose(fp);
 #endif
     magma_free_cpu( Anorm );
