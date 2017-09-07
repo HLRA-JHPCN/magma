@@ -108,7 +108,6 @@ int main( int argc, char** argv)
             M = N;
             N = tmp;
         }
-        lda = M;
         if ( opts.transA == MagmaNoTrans ) {
             Xm = N;
             Ym = M;
@@ -117,6 +116,8 @@ int main( int argc, char** argv)
             Xm = M;
             Ym = N;
         }
+        lda = M;
+        ldda = magma_roundup( M, opts.align );  // multiple of 32 by default
         sizeAd_max = imax(sizeAd_max,ldda*N*batchCount);
         sizeA_max  = imax(sizeA_max, lda*N*batchCount);
         sizeX_max  = imax(sizeX_max, incx*Xm*batchCount);
@@ -248,7 +249,7 @@ int main( int argc, char** argv)
             tot_flops += gflops;
             tot_times += magma_time;
             #endif
-            
+
             /* =====================================================================
                Performs operation using CPU BLAS
                =================================================================== */
