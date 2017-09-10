@@ -208,7 +208,7 @@ printf( " ntest=%d+%d\n",ntest1,ntest2);
 
             sizeA_batch  += N * lda;
             sizeAd_batch += N * ldda;
-
+                
             sizeX_batch += N;
             sizeY_batch += M;
         }
@@ -227,9 +227,9 @@ printf( " ntest=%d+%d\n",ntest1,ntest2);
     TESTING_CHECK( magma_dmalloc( &d_X, sizeX_max ));
     TESTING_CHECK( magma_dmalloc( &d_Y, sizeY_max ));
 
-    TESTING_CHECK( magma_malloc( (void**) &d_A_array, batchCount * sizeof(double*) ));
-    TESTING_CHECK( magma_malloc( (void**) &d_X_array, batchCount * sizeof(double*) ));
-    TESTING_CHECK( magma_malloc( (void**) &d_Y_array, batchCount * sizeof(double*) ));
+    TESTING_CHECK( magma_malloc( (void**) &d_A_array, batchCount_0 * sizeof(double*) ));
+    TESTING_CHECK( magma_malloc( (void**) &d_X_array, batchCount_0 * sizeof(double*) ));
+    TESTING_CHECK( magma_malloc( (void**) &d_Y_array, batchCount_0 * sizeof(double*) ));
 
     /* Initialize the matrices */
     lapackf77_dlarnv( &ione, ISEED, &sizeA_max, h_A );
@@ -463,7 +463,7 @@ printf( " ntest=%d+%d\n",ntest1,ntest2);
                     error = lapackf77_dlange( "F", &ione, &Yn[s], h_Ymagma_tmp, &h_incy[s], work )
                           / normalize;
                     magma_error = magma_max_nan( error, magma_error );
-                    
+
                     h_Y_tmp      += Yn[s] * h_incy[s];
                     h_Ymagma_tmp += Yn[s] * h_incy[s];
                 }
