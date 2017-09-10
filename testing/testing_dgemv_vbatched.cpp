@@ -54,6 +54,8 @@ int hacapk_size_sorter(const void* arg1,const void* arg2) {
 }
 #endif
 
+#define imax(a, b) ((a) > (b) ? (a) : (b))
+
 /* ////////////////////////////////////////////////////////////////////////////
    -- Testing dgemv_vbatched
 */
@@ -181,6 +183,47 @@ int main( int argc, char** argv)
     opts.ntest = ntest1+ntest2;
     opts.niter = 1;
 printf( " ntest=%d+%d\n",ntest1,ntest2);
+
+#define MALLOC_ONCE
+#if defined(MALLOC_ONCE)
+    magma_int_t sizeAd_max = 0;
+    magma_int_t sizeA_max = 0;
+    magma_int_t sizeX_max = 0;
+    magma_int_t sizeY_max = 0;
+    for ( int itest = 0; itest < opts.ntest; ++itest ) {
+        int id;
+        fscanf(fp, "%d %d %d\n",&id,&N,&M);
+        int lda = M;
+        int ldda = magma_roundup( M, opts.align );  // multiple of 32 by default
+        sizeAd_max = imax(sizeAd_max,ldda*N*batchCount);
+        sizeA_max  = imax(sizeA_max, lda*N*batchCount);
+        sizeX_max  = imax(sizeX_max, N*batchCount);
+        sizeY_max  = imax(sizeY_max, M*batchCount);
+    }
+
+    TESTING_CHECK( magma_dmalloc_cpu( &h_A,  sizeA_max ));
+    TESTING_CHECK( magma_dmalloc_cpu( &h_X,  sizeX_max ));
+    TESTING_CHECK( magma_dmalloc_cpu( &h_Y,  sizeY_max  ));
+    TESTING_CHECK( magma_dmalloc_cpu( &h_Ymagma,  sizeY_max  ));
+
+    TESTING_CHECK( magma_dmalloc( &d_A, sizeAd_max ));
+    TESTING_CHECK( magma_dmalloc( &d_X, sizeX_max ));
+    TESTING_CHECK( magma_dmalloc( &d_Y, sizeY_max ));
+
+    TESTING_CHECK( magma_malloc( (void**) &d_A_array, batchCount * sizeof(double*) ));
+    TESTING_CHECK( magma_malloc( (void**) &d_X_array, batchCount * sizeof(double*) ));
+    TESTING_CHECK( magma_malloc( (void**) &d_Y_array, batchCount * sizeof(double*) ));
+
+    /* Initialize the matrices */
+    lapackf77_dlarnv( &ione, ISEED, &sizeA_max, h_A );
+    lapackf77_dlarnv( &ione, ISEED, &sizeX_max, h_X );
+    lapackf77_dlarnv( &ione, ISEED, &sizeY_max, h_Y );
+    fclose(fp);
+
+    //fp = fopen("sizes_sorted.dat","r");
+    fp = fopen("sizes.dat","r");
+    fscanf(fp, "%d %d\n",&num_sizes,&nlf);
+#endif
 #endif
     double total_gpu = 0.0, total_cpu = 0.0;
     for( int itest = 0; itest < opts.ntest; ++itest ) {
@@ -242,6 +285,7 @@ printf( " ntest=%d+%d\n",ntest1,ntest2);
                 h_M[i] = 1 + (rand() % M);
                 h_N[i] = 1 + (rand() % N);
 #endif
+
                 h_incx[i] = 1 + (rand() % max_inc);
                 h_incy[i] = 1 + (rand() % max_inc);
                 
@@ -259,6 +303,10 @@ printf( " ntest=%d+%d\n",ntest1,ntest2);
                 gflops += FLOPS_DGEMV( h_M[i], h_N[i]) / 1e9;
             }
             
+            #if defined(MALLOC_ONCE)
+            /* Initialize the matrices */
+            lapackf77_dlarnv( &ione, ISEED, &total_size_Y, h_Y );
+            #else
             TESTING_CHECK( magma_dmalloc_pinned(&h_A, total_size_A_cpu) );
             TESTING_CHECK( magma_dmalloc_pinned(&h_X,   total_size_X) );
             TESTING_CHECK( magma_dmalloc_pinned(&h_Y,   total_size_Y) );
@@ -272,7 +320,8 @@ printf( " ntest=%d+%d\n",ntest1,ntest2);
             lapackf77_dlarnv( &ione, ISEED, &total_size_A_cpu, h_A );
             lapackf77_dlarnv( &ione, ISEED, &total_size_X, h_X );
             lapackf77_dlarnv( &ione, ISEED, &total_size_Y, h_Y );
-            
+            #endif            
+
             // Compute norms for error
             h_A_tmp = h_A;
             h_X_tmp = h_X;
@@ -412,6 +461,7 @@ printf( " ntest=%d+%d\n",ntest1,ntest2);
                        magma_perf,  1000.*magma_time);
             }
             
+            #if !defined(MALLOC_ONCE)
             magma_free_pinned( h_A );
             magma_free_pinned( h_X );
             magma_free_pinned( h_Y );
@@ -420,7 +470,8 @@ printf( " ntest=%d+%d\n",ntest1,ntest2);
             magma_free( d_A );
             magma_free( d_X );
             magma_free( d_Y );
-            
+            #endif            
+
             fflush( stdout);
         }
         if ( opts.niter > 1 ) {
@@ -435,8 +486,18 @@ printf( " ntest=%d+%d\n",ntest1,ntest2);
     fclose(fp);
     #endif
 #endif
-
     // free resources
+    #if !defined(MALLOC_ONCE)
+    magma_free_pinned( h_A );
+    magma_free_pinned( h_X );
+    magma_free_pinned( h_Y );
+    magma_free_pinned( h_Ymagma );
+
+    magma_free( d_A );
+    magma_free( d_X );
+    magma_free( d_Y );
+    #endif            
+
     magma_free_pinned( h_M );
     magma_free_pinned( h_N );
     magma_free_pinned( h_ldda );
