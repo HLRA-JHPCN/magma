@@ -100,11 +100,11 @@ int main( int argc, char** argv)
     batchCount = opts.batchcount;
     
     // allocate space for the sizes/leading dim.
-    TESTING_CHECK( magma_imalloc_cpu(&h_M, batchCount) );
-    TESTING_CHECK( magma_imalloc_cpu(&h_N, batchCount) );
-    TESTING_CHECK( magma_imalloc_cpu(&h_ldda, batchCount) );
-    TESTING_CHECK( magma_imalloc_cpu(&h_incx, batchCount) );
-    TESTING_CHECK( magma_imalloc_cpu(&h_incy, batchCount) );
+    TESTING_CHECK( magma_imalloc_pinned(&h_M, batchCount) );
+    TESTING_CHECK( magma_imalloc_pinned(&h_N, batchCount) );
+    TESTING_CHECK( magma_imalloc_pinned(&h_ldda, batchCount) );
+    TESTING_CHECK( magma_imalloc_pinned(&h_incx, batchCount) );
+    TESTING_CHECK( magma_imalloc_pinned(&h_incy, batchCount) );
     
     TESTING_CHECK( magma_imalloc(&d_M, batchCount+1) );
     TESTING_CHECK( magma_imalloc(&d_N, batchCount+1) );
@@ -174,11 +174,13 @@ int main( int argc, char** argv)
     int batchCount_0 = batchCount;
     int num_sizes, nlf;
     FILE *fp = fopen("sizes_sorted.dat","r");
+    //FILE *fp = fopen("sizes.dat","r");
     fscanf(fp, "%d %d\n",&num_sizes,&nlf);
     int ntest1 = magma_ceildiv(nlf, batchCount);
     int ntest2 = magma_ceildiv(num_sizes-nlf, batchCount);
     opts.ntest = ntest1+ntest2;
     opts.niter = 1;
+printf( " ntest=%d+%d\n",ntest1,ntest2);
 #endif
     double total_gpu = 0.0, total_cpu = 0.0;
     for( int itest = 0; itest < opts.ntest; ++itest ) {
@@ -257,10 +259,10 @@ int main( int argc, char** argv)
                 gflops += FLOPS_DGEMV( h_M[i], h_N[i]) / 1e9;
             }
             
-            TESTING_CHECK( magma_dmalloc_cpu(&h_A, total_size_A_cpu) );
-            TESTING_CHECK( magma_dmalloc_cpu(&h_X,   total_size_X) );
-            TESTING_CHECK( magma_dmalloc_cpu(&h_Y,   total_size_Y) );
-            TESTING_CHECK( magma_dmalloc_cpu(&h_Ymagma, total_size_Y) );
+            TESTING_CHECK( magma_dmalloc_pinned(&h_A, total_size_A_cpu) );
+            TESTING_CHECK( magma_dmalloc_pinned(&h_X,   total_size_X) );
+            TESTING_CHECK( magma_dmalloc_pinned(&h_Y,   total_size_Y) );
+            TESTING_CHECK( magma_dmalloc_pinned(&h_Ymagma, total_size_Y) );
             
             TESTING_CHECK( magma_dmalloc(&d_A, total_size_A_dev) );
             TESTING_CHECK( magma_dmalloc(&d_X, total_size_X) );
@@ -314,7 +316,7 @@ int main( int argc, char** argv)
             magma_dsetvector( total_size_Y, h_Y, 1, d_Y, 1, opts.queue );
             
             magma_time = magma_sync_wtime( opts.queue );
-            #if 0
+            #if 1
             magmablas_dgemv_vbatched_max_nocheck(opts.transA, d_M, d_N,
                              alpha, d_A_array, d_ldda,
                                     d_X_array, d_incx,
@@ -332,8 +334,10 @@ int main( int argc, char** argv)
             magma_perf = gflops / magma_time;
             total_gpu += magma_time;
             
-            magma_dgetvector(total_size_Y, d_Y, 1, h_Ymagma, 1, opts.queue );
-            
+            if ( opts.lapack ) {
+                magma_dgetvector(total_size_Y, d_Y, 1, h_Ymagma, 1, opts.queue );
+            }
+
             /* =====================================================================
                Performs operation using CPU BLAS
                =================================================================== */
@@ -408,10 +412,10 @@ int main( int argc, char** argv)
                        magma_perf,  1000.*magma_time);
             }
             
-            magma_free_cpu( h_A );
-            magma_free_cpu( h_X );
-            magma_free_cpu( h_Y );
-            magma_free_cpu( h_Ymagma );
+            magma_free_pinned( h_A );
+            magma_free_pinned( h_X );
+            magma_free_pinned( h_Y );
+            magma_free_pinned( h_Ymagma );
 
             magma_free( d_A );
             magma_free( d_X );
@@ -433,11 +437,11 @@ int main( int argc, char** argv)
 #endif
 
     // free resources
-    magma_free_cpu( h_M );
-    magma_free_cpu( h_N );
-    magma_free_cpu( h_ldda );
-    magma_free_cpu( h_incx );
-    magma_free_cpu( h_incy );
+    magma_free_pinned( h_M );
+    magma_free_pinned( h_N );
+    magma_free_pinned( h_ldda );
+    magma_free_pinned( h_incx );
+    magma_free_pinned( h_incy );
 
     magma_free_cpu( Anorm );
     magma_free_cpu( Xnorm );

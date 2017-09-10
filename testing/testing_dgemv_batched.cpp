@@ -79,6 +79,7 @@ int main( int argc, char** argv)
 #if defined(FROM_SORTED_FILE)
     int num_sizes, nlf;
     FILE *fp = fopen("sizes_sorted.dat","r");
+    //FILE *fp = fopen("sizes.dat","r");
     fscanf(fp, "%d %d\n",&num_sizes,&nlf);
     opts.ntest = num_sizes;
     opts.niter = 1;
@@ -96,10 +97,10 @@ int main( int argc, char** argv)
 
 #define MALLOC_ONCE
 #if defined(MALLOC_ONCE)
-    int sizeAd_max = 0;
-    int sizeA_max = 0;
-    int sizeX_max = 0;
-    int sizeY_max = 0;
+    magma_int_t sizeAd_max = 0;
+    magma_int_t sizeA_max = 0;
+    magma_int_t sizeX_max = 0;
+    magma_int_t sizeY_max = 0;
     for ( int itest = 0; itest < opts.ntest; ++itest ) {
         int id;
         fscanf(fp, "%d %d %d\n",&id,&N,&M);
@@ -144,6 +145,7 @@ int main( int argc, char** argv)
     fclose(fp);
 
     fp = fopen("sizes_sorted.dat","r");
+    //fp = fopen("sizes.dat","r");
     fscanf(fp, "%d %d\n",&num_sizes,&nlf);
 #endif
     for( int itest = 0; itest < opts.ntest; ++itest ) {
@@ -184,8 +186,8 @@ int main( int argc, char** argv)
             assert(sizeY <= sizeY_max);
             assert(ldda*N*batchCount <= sizeAd_max);
             /* Initialize the matrices */
-            lapackf77_dlarnv( &ione, ISEED, &sizeA, h_A );
-            lapackf77_dlarnv( &ione, ISEED, &sizeX, h_X );
+            //lapackf77_dlarnv( &ione, ISEED, &sizeA, h_A );
+            //lapackf77_dlarnv( &ione, ISEED, &sizeX, h_X );
             lapackf77_dlarnv( &ione, ISEED, &sizeY, h_Y );
             #else
             TESTING_CHECK( magma_dmalloc_cpu( &h_A,  sizeA ));
