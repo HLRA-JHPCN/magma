@@ -191,14 +191,31 @@ printf( " ntest=%d+%d\n",ntest1,ntest2);
     magma_int_t sizeX_max = 0;
     magma_int_t sizeY_max = 0;
     for ( int itest = 0; itest < opts.ntest; ++itest ) {
-        int id;
-        fscanf(fp, "%d %d %d\n",&id,&N,&M);
-        int lda = M;
-        int ldda = magma_roundup( M, opts.align );  // multiple of 32 by default
-        sizeAd_max = imax(sizeAd_max,ldda*N*batchCount);
-        sizeA_max  = imax(sizeA_max, lda*N*batchCount);
-        sizeX_max  = imax(sizeX_max, N*batchCount);
-        sizeY_max  = imax(sizeY_max, M*batchCount);
+        if (itest < ntest1) {
+            batchCount = min(batchCount_0, nlf - batchCount_0*itest);
+        } else {
+            batchCount = min(batchCount_0, (num_sizes-nlf) - batchCount_0*(itest-ntest1));
+        }
+        int sizeAd_batch = 0;
+        int sizeA_batch  = 0;
+        int sizeX_batch  = 0;
+        int sizeY_batch  = 0;
+        for (int i = 0; i < batchCount; i++) {
+            int id;
+            fscanf(fp, "%d %d %d\n",&id,&N,&M);
+            int lda = M;
+            int ldda = magma_roundup( M, opts.align );  // multiple of 32 by default
+
+            sizeA_batch  += N * lda;
+            sizeAd_batch += N * ldda;
+
+            sizeX_batch += N;
+            sizeY_batch += M;
+        }
+        sizeAd_max = imax(sizeAd_max, sizeAd_batch);
+        sizeA_max  = imax(sizeA_max, sizeA_batch);
+        sizeX_max  = imax(sizeX_max, sizeX_batch);
+        sizeY_max  = imax(sizeY_max, sizeY_batch);
     }
 
     TESTING_CHECK( magma_dmalloc_cpu( &h_A,  sizeA_max ));
@@ -220,8 +237,8 @@ printf( " ntest=%d+%d\n",ntest1,ntest2);
     lapackf77_dlarnv( &ione, ISEED, &sizeY_max, h_Y );
     fclose(fp);
 
-    //fp = fopen("sizes_sorted.dat","r");
-    fp = fopen("sizes.dat","r");
+    fp = fopen("sizes_sorted.dat","r");
+    //fp = fopen("sizes.dat","r");
     fscanf(fp, "%d %d\n",&num_sizes,&nlf);
 #endif
 #endif
@@ -304,6 +321,10 @@ printf( " ntest=%d+%d\n",ntest1,ntest2);
             }
             
             #if defined(MALLOC_ONCE)
+            assert(total_size_A_dev <= sizeAd_max);
+            assert(total_size_A_cpu <= sizeA_max);
+            assert(total_size_X <= sizeX_max);
+            assert(total_size_Y <= sizeY_max);
             /* Initialize the matrices */
             lapackf77_dlarnv( &ione, ISEED, &total_size_Y, h_Y );
             #else
