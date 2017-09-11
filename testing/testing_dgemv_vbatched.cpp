@@ -130,6 +130,16 @@ int main( int argc, char** argv)
     double eps = lapackf77_dlamch("E");
     double tol = 3*eps;
     
+    // queues
+    magma_device_t cdev;
+    magma_getdevice( &cdev );
+
+    int num_queues = 5;
+    magma_queue_t *queues = (magma_queue_t*)malloc(num_queues * sizeof(magma_queue_t));
+    for (int i=0; i<num_queues; i++) {
+        magma_queue_create( cdev, &queues[i] );
+    }
+
     printf("%% If running lapack (option --lapack), MAGMA error is computed\n"
            "%% relative to CPU BLAS result.\n\n"
            "%% transA = %s\n",
@@ -386,7 +396,15 @@ printf( " ntest=%d+%d\n",ntest1,ntest2);
             magma_dsetvector( total_size_Y, h_Y, 1, d_Y, 1, opts.queue );
             
             magma_time = magma_sync_wtime( opts.queue );
-            #if 1
+            #define VERSION 1
+            #if VERSION==1
+            for (int i = 0; i < batchCount; i++) {
+                magma_dgemv( opts.transA, h_M[i], h_N[i],
+                             alpha, h_A_array[i], h_ldda[i],
+                                    h_X_array[i], h_incx[i],
+                             beta,  h_Y_array[i], h_incy[i], queues[i%num_queues] );
+            }
+            #elif VERSION==2
             magmablas_dgemv_vbatched_max_nocheck(opts.transA, d_M, d_N,
                              alpha, d_A_array, d_ldda,
                                     d_X_array, d_incx,
@@ -508,6 +526,10 @@ printf( " ntest=%d+%d\n",ntest1,ntest2);
     #endif
 #endif
     // free resources
+    for (int i=0; i<num_queues; i++) {
+        magma_queue_destroy( queues[i] );
+    }
+    free(queues);
     #if !defined(MALLOC_ONCE)
     magma_free_pinned( h_A );
     magma_free_pinned( h_X );
