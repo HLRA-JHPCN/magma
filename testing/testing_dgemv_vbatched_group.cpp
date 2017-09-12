@@ -30,31 +30,8 @@
 #include "../control/magma_threadsetting.h"  // internal header
 #endif
 
-#ifdef SORT_SIZES
-#define sort_array_size 4
-#define sort_group_size 8
-
-int hacapk_size_sorter(const void* arg1,const void* arg2) {
-  const int *val1 = (const int*)arg1;
-  const int *val2 = (const int*)arg2;
-
-  //#define BY_GROUP
-  #define BY_M
-  //#define BY_N
-  #if defined(BY_GROUP)
-  // sort by n "group", whithin group, sort by m
-  return (val2[3] == val1[3] ? (val2[1] < val1[1]) : val2[3] < val1[3]);
-  #elif defined(BY_M)
-  // sort by m
-  return (val2[1] < val1[1]);
-  #elif defined(BY_N)
-  // sort by n
-  return (val2[2] < val1[2]);
-  #endif
-}
-#endif
-
 #define imax(a, b) ((a) > (b) ? (a) : (b))
+#define iabs(a) ((a) < 0.0 ? -(a) : (a))
 
 
 /* ////////////////////////////////////////////////////////////////////////////
@@ -76,6 +53,7 @@ int main( int argc, char** argv)
     int status = 0;
     magma_int_t batchCount;
     magma_int_t max_M, max_N;
+    magma_int_t min_M, min_N;
 
     double *h_A, *h_X, *h_Y, *h_Ymagma;
     double *d_A, *d_X, *d_Y;
@@ -101,13 +79,18 @@ int main( int argc, char** argv)
     opts.parse_opts( argc, argv );
     opts.lapack |= opts.check;
     batchCount = opts.batchcount;
-    
+    int batchCount_0 = batchCount;
+    batchCount = 2*batchCount; // to adjust later..    
+
     // allocate space for the sizes/leading dim.
-    TESTING_CHECK( magma_imalloc_pinned(&h_M, batchCount) );
-    TESTING_CHECK( magma_imalloc_pinned(&h_N, batchCount) );
+    TESTING_CHECK( magma_imalloc_pinned(&h_M, batchCount+1) );
+    TESTING_CHECK( magma_imalloc_pinned(&h_N, batchCount+1) );
     TESTING_CHECK( magma_imalloc_pinned(&h_ldda, batchCount) );
     TESTING_CHECK( magma_imalloc_pinned(&h_incx, batchCount) );
     TESTING_CHECK( magma_imalloc_pinned(&h_incy, batchCount) );
+    for (int i=0; i<=batchCount; i++) {
+        h_M[i] = h_N[i] = 0;
+    }
     
     TESTING_CHECK( magma_imalloc(&d_M, batchCount+1) );
     TESTING_CHECK( magma_imalloc(&d_N, batchCount+1) );
@@ -136,62 +119,83 @@ int main( int argc, char** argv)
            "%% transA = %s\n",
            lapack_trans_const(opts.transA));
     
-    printf("%%              max   max\n");
-    printf("%% BatchCount     M     N   MAGMA Gflop/s (ms)   CPU Gflop/s (ms)   MAGMA error\n");
-    printf("%%=============================================================================\n");
-#define FROM_SORTED_FILE
-#if defined(FROM_FILE)
-    int batchCount_0 = batchCount;
-    int num_sizes = 311808;
-    FILE *fp = fopen("sizes.dat","r");
-    #if defined(SORT_SIZES)
-    int *sizes = (int*)malloc( sort_array_size*num_sizes * sizeof(int) );
-    for (int i=0; i<num_sizes; i++) {
-        sizes[sort_array_size * i] = i; // id
-
-        int id, m, n;
-        fscanf(fp, "%d %d %d\n",&id,&m,&n);
-        if ( opts.transA == MagmaNoTrans ) {
-            int tmp = m;
-            m = n;
-            n = tmp;
-        }
-
-        sizes[sort_array_size*i + 1] = m;
-        sizes[sort_array_size*i + 2] = n;
-        #if defined(BY_M)
-        sizes[sort_array_size*i + 3] = (m-1) / sort_group_size;
-        #else
-        sizes[sort_array_size*i + 3] = (n-1) / sort_group_size;
-        #endif
-    }
-    fclose(fp);
-    qsort( sizes, num_sizes, sort_array_size*sizeof(int), hacapk_size_sorter );
-    fp = fopen("sizes_sorted.dat","w");
-    for (int i=0; i<num_sizes; i++) {
-        fprintf(fp, "%d %d %d\n",sizes[sort_array_size*i], sizes[sort_array_size*i+1], sizes[sort_array_size*i+2] );
-    }
-    fclose(fp);
-    #endif
-#elif defined(FROM_SORTED_FILE)
-    int batchCount_0 = batchCount;
+    printf("%%              min,max   min,max\n");
+    printf("%% BatchCount         M         N   MAGMA Gflop/s (ms)   CPU Gflop/s (ms)   MAGMA error\n");
+    printf("%%=====================================================================================\n");
     int num_sizes, nlf;
     FILE *fp = fopen("sizes_sorted.dat","r");
-    //FILE *fp = fopen("sizes.dat","r");
     fscanf(fp, "%d %d\n",&num_sizes,&nlf);
-    int ntest1 = magma_ceildiv(nlf, batchCount);
-    int ntest2 = magma_ceildiv(num_sizes-nlf, batchCount);
+    int ntest1 = magma_ceildiv(nlf, batchCount_0);
+    int ntest2 = magma_ceildiv(num_sizes-nlf, batchCount_0);
     opts.ntest = ntest1+ntest2;
     opts.niter = 1;
-printf( " ntest=%d+%d (%d+%d)\n",ntest1,ntest2,nlf,num_sizes);
-#endif
+    printf( " ntest=%d+%d (%d+%d)\n",ntest1,ntest2,nlf,num_sizes);
+
+    // find more balanced batch sizes
+    int *batch_sizes1 = (int*)calloc(4, sizeof(int));
+    for ( int itest = 0; itest < nlf; itest++) {
+        int id, m, n;
+        fscanf(fp, "%d %d %d\n",&id,&n,&m);
+        if (m <= 8) {
+            batch_sizes1[0] ++;
+        } else if (m <= 32) {
+            batch_sizes1[1] ++;
+        } else if (m <= 64) {
+            batch_sizes1[2] ++;
+        } else {
+            batch_sizes1[3] ++;
+        }
+    }
+    for (int i = 0; i < 4; i++) {
+        int count = (batch_sizes1[i]+batchCount_0-1)/batchCount_0;
+        if (count > 1) {
+            int opt1 = (batch_sizes1[i]+count-1)/count;
+            int opt2 = (batch_sizes1[i]+count-2)/(count-1);
+            if (iabs(opt1-batchCount_0) < iabs(opt2-batchCount_0)) {
+                batch_sizes1[i] = opt1;
+            } else {
+                batch_sizes1[i] = opt2;
+            }
+        }
+    }
+
+    int *batch_sizes2 = (int*)calloc(4, sizeof(int));
+    for ( int itest = nlf; itest < num_sizes; itest++) {
+        int id, m, n;
+        fscanf(fp, "%d %d %d\n",&id,&n,&m);
+        if (m <= 8) {
+            batch_sizes2[0] ++;
+        } else if (m <= 32) {
+            batch_sizes2[1] ++;
+        } else if (m <= 64) {
+            batch_sizes2[2] ++;
+        } else {
+            batch_sizes2[3] ++;
+        }
+    }
+    for (int i = 0; i < 4; i++) {
+        int count = (batch_sizes2[i]+batchCount_0-1)/batchCount_0;
+        if (count > 1) {
+            int opt1 = (batch_sizes2[i]+count-1)/count;
+            int opt2 = (batch_sizes2[i]+count-2)/(count-1);
+            if (iabs(opt1-batchCount_0) < iabs(opt2-batchCount_0)) {
+                batch_sizes2[i] = opt1;
+            } else {
+                batch_sizes2[i] = opt2;
+            }
+        }
+    }
+    fclose(fp);
+
+    // reopen file
+    fp = fopen("sizes_sorted.dat","r");
+    fscanf(fp, "%d %d\n",&num_sizes,&nlf);
+
     int m_upper = 8;
     double total_gpu = 0.0, total_cpu = 0.0;
+    batchCount_0 = batch_sizes1[0];
     for( int itest = 0; itest < num_sizes; itest+=batchCount ) {
         for( int iter = 0; iter < opts.niter; ++iter ) {
-            M = opts.msize[itest];
-            N = opts.nsize[itest];
-            
             if ( opts.transA == MagmaNoTrans ) {
                 Xn = h_N;
                 Yn = h_M;
@@ -209,44 +213,35 @@ printf( " ntest=%d+%d (%d+%d)\n",ntest1,ntest2,nlf,num_sizes);
             max_M = max_N = 0;
             total_size_A_cpu = total_size_A_dev = 0;
             total_size_X = total_size_Y = 0;
-#if defined(FROM_FILE) | defined(FROM_SORTED_FILE)
             if (itest < nlf) {
                 batchCount = min(batchCount_0, nlf - itest);
             } else {
+                if (itest == nlf) {
+                    for (int i = 0; i < 4; i++) {
+                        if (batch_sizes2[i] > 0) {
+                            batchCount_0 = batch_sizes2[i];
+                            break;
+                        }
+                    }
+                }
                 batchCount = min(batchCount_0, num_sizes - itest);
             }
-#endif
             int i;
             for (i = 0; i < batchCount; i++) {
-#if defined(FROM_FILE) | defined(FROM_SORTED_FILE)
-                #if defined(SORT_SIZES)
-                h_M[i] = sizes[sort_array_size*(iter+i) + 1];
-                h_N[i] = sizes[sort_array_size*(iter+i) + 2];
-                #elif defined(FROM_SORTED_FILE)
-                int id, m, n;
-                fscanf(fp, "%d %d %d\n",&id,&n,&m);
-                if ( opts.transA == MagmaTrans ) {
-                   int tmp = m;
-                    m = n;
-                    n = tmp;
+                if (h_M[i] == 0) {
+                    int id, m, n;
+                    fscanf(fp, "%d %d %d\n",&id,&n,&m);
+                    if ( opts.transA == MagmaTrans ) {
+                       int tmp = m;
+                       m = n;
+                       n = tmp;
+                    }
+                    h_M[i] = m;
+                    h_N[i] = n;
+                } else {
+                    //printf( " >> reload(%d): %d %d\n",i,h_M[i],h_N[i] );
                 }
-                h_M[i] = m;
-                h_N[i] = n;
-                #else
-                int id, m, n;
-                fscanf(fp, "%d %d %d\n",&id,&m,&n);
-                if ( opts.transA == MagmaNoTrans ) {
-                   int tmp = m;
-                    m = n;
-                    n = tmp;
-                }
-                h_M[i] = m;
-                h_N[i] = n;
-                #endif
-#else
-                h_M[i] = 1 + (rand() % M);
-                h_N[i] = 1 + (rand() % N);
-#endif
+
                 if (itest+i == nlf) {
                     if (h_M[i] <= 8) {
                         m_upper = 8;
@@ -259,13 +254,27 @@ printf( " ntest=%d+%d (%d+%d)\n",ntest1,ntest2,nlf,num_sizes);
                     }
                 }
                 if (h_M[i] > m_upper) {
-                    i --;
                     if (m_upper == 8) {
                         m_upper = 32;
+                        if (itest+i < nlf) {
+                            batchCount_0 = batch_sizes1[1];
+                        } else {
+                            batchCount_0 = batch_sizes2[1];
+                        }
                     } else if (m_upper == 32) {
                         m_upper = 64;
+                        if (itest+i < nlf) {
+                            batchCount_0 = batch_sizes1[2];
+                        } else {
+                            batchCount_0 = batch_sizes2[2];
+                        }
                     } else if (m_upper == 64) {
                         m_upper = 10000;
+                        if (itest+i < nlf) {
+                            batchCount_0 = batch_sizes1[3];
+                        } else {
+                            batchCount_0 = batch_sizes2[3];
+                        }
                     }
                     break;
                 }
@@ -274,6 +283,13 @@ printf( " ntest=%d+%d (%d+%d)\n",ntest1,ntest2,nlf,num_sizes);
                 
                 max_M = max( max_M, h_M[i] );
                 max_N = max( max_N, h_N[i] );
+                if (i == 0) {
+                    min_M = h_M[i];
+                    min_N = h_N[i];
+                } else {
+                    min_M = min( min_M, h_M[i] );
+                    min_N = min( min_N, h_N[i] );
+                }
                 
                 h_ldda[i] = magma_roundup( h_lda[i], opts.align );  // multiple of 32 by default
                 
@@ -429,18 +445,27 @@ printf( " ntest=%d+%d (%d+%d)\n",ntest1,ntest2,nlf,num_sizes);
 
                     bool okay = (magma_error < tol);
                     status += ! okay;
-                    printf("  %10lld %5lld %5lld   %7.2f (%7.2f)   %7.2f (%7.2f)   %8.2e  %s (%d)\n",
-                           (long long) batchCount, (long long) max_M, (long long) max_N,
+                    printf("  %10lld %5lld,%5lld %5lld,%5lld   %7.2f (%7.2f)   %7.2f (%7.2f)   %8.2e  %s (itest=%d, batchCount0=%d)\n",
+                           (long long) batchCount, (long long)min_M, (long long) max_M, (long long)min_N, (long long) max_N,
                            magma_perf,  1000.*magma_time,
                            cpu_perf,    1000.*cpu_time,
-                           magma_error, (okay ? "ok" : "failed"), itest);
+                           magma_error, (okay ? "ok" : "failed"), itest,batchCount_0);
                 }
                 else {
-                    printf("  %10lld %5lld %5lld   %7.2f (%7.2f)     ---   (  ---  )     --- (%d)\n",
-                           (long long) batchCount, (long long) max_M, (long long) max_N,
-                           magma_perf,  1000.*magma_time, itest);
+                    printf("  %10lld %5lld,%5lld %5lld,%5lld   %7.2f (%7.2f)     ---   (  ---  )     --- (itest=%d, batchCount0=%d)\n",
+                           (long long) batchCount, (long long)min_M, (long long) max_M, (long long)min_N, (long long) max_N,
+                           magma_perf,  1000.*magma_time, itest, batchCount_0);
                 }
-            
+                for (i=0; i<batchCount; i++) {
+                    h_M[i] = h_N[i] = 0;
+                }
+                if (h_M[batchCount] != 0) {
+                    h_M[0] = h_M[batchCount];
+                    h_N[0] = h_N[batchCount];
+                    h_M[batchCount] = 0;
+                    h_N[batchCount] = 0;
+                }
+
                 magma_free_pinned( h_A );
                 magma_free_pinned( h_X );
                 magma_free_pinned( h_Y );
@@ -458,13 +483,7 @@ printf( " ntest=%d+%d (%d+%d)\n",ntest1,ntest2,nlf,num_sizes);
         }
     }
     printf( "\n Total time: %.2e seconds on a GPU, %.2e seconds with CPUs\n\n",total_gpu,total_cpu );
-#if defined(FROM_FILE) | defined(FROM_SORTED_FILE)
-    #if defined(SORT_SIZES)
-    free(sizes);
-    #else
     fclose(fp);
-    #endif
-#endif
 
     // free resources
     magma_free_pinned( h_M );
