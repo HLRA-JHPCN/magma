@@ -133,15 +133,16 @@ int main( int argc, char** argv)
 
     // find more balanced batch sizes
     int max_M_global = 0;
-    for ( int itest = 0; itest < nlf; itest++) {
+    for ( int itest = 0; itest < num_sizes; itest++) {
         int id, m, n;
         fscanf(fp, "%d %d %d\n",&id,&n,&m);
         max_M_global = max(max_M_global, m);
     }
     int m_count = 1 + ((max_M_global+31) / 32);
-    fclose(fp);
+printf( " max_M_global=%d, m_count=%d\n",max_M_global,m_count );
 
     // reopen file
+    fclose(fp);
     fp = fopen("sizes_sorted.dat","r");
     fscanf(fp, "%d %d\n",&num_sizes,&nlf);
 
@@ -152,7 +153,7 @@ int main( int argc, char** argv)
         if (m <= 8) {
             batch_sizes1[0] ++;
         } else {
-            batch_sizes1[1+(m/32)] ++;
+            batch_sizes1[1+((m-1)/32)] ++;
         }
     }
     for (int i = 0; i < m_count; i++) {
@@ -174,6 +175,7 @@ int main( int argc, char** argv)
             }
             #endif
         }
+        if (batch_sizes1[i] > 0) printf( " batch_sizes1[%d]=%d\n",i,batch_sizes1[i]);
     }
 
     int *batch_sizes2 = (int*)calloc(m_count, sizeof(int));
@@ -183,17 +185,18 @@ int main( int argc, char** argv)
         if (m <= 8) {
             batch_sizes2[0] ++;
         } else {
-            batch_sizes1[1+(m/32)] ++;
+            batch_sizes2[1+((m-1)/32)] ++;
         }
     }
-    for (int i = 0; i < 4; i++) {
+    printf( "\n" );
+    for (int i = 0; i < m_count; i++) {
         int count = (batch_sizes2[i]+batchCount_0-1)/batchCount_0;
         if (count > 1) {
             #if 1
-            if (batch_sizes1[i]%batchCount_0 < batchCount_0/2) {
-                batch_sizes1[i] = (batch_sizes1[i]+count-2)/(count-1);
+            if (batch_sizes2[i]%batchCount_0 < batchCount_0/2) {
+                batch_sizes2[i] = (batch_sizes2[i]+count-2)/(count-1);
             } else {
-                batch_sizes1[i] = (batch_sizes1[i]+count-1)/count;
+                batch_sizes2[i] = (batch_sizes2[i]+count-1)/count;
             }
             #else
             int opt1 = (batch_sizes2[i]+count-1)/count;
@@ -205,6 +208,7 @@ int main( int argc, char** argv)
             }
             #endif
         }
+        if (batch_sizes2[i] > 0) printf( " batch_sizes2[%d]=%d\n",i,batch_sizes2[i]);
     }
     fclose(fp);
 
@@ -212,8 +216,10 @@ int main( int argc, char** argv)
     fp = fopen("sizes_sorted.dat","r");
     fscanf(fp, "%d %d\n",&num_sizes,&nlf);
 
+    int m_id_j = 0;
     int m_id = 0;
     int m_upper = 8;
+    int total_batch = 0;
     double total_gpu = 0.0, total_cpu = 0.0;
     batchCount_0 = batch_sizes1[0];
     for( int itest = 0; itest < num_sizes; itest+=batchCount ) {
@@ -248,6 +254,10 @@ int main( int argc, char** argv)
                 }
                 batchCount = min(batchCount_0, num_sizes - itest);
             }
+            if (m_id_j != m_id) {
+                printf( "\n" );
+            }
+            m_id_j = m_id;
             int i;
             for (i = 0; i < batchCount; i++) {
                 if (h_M[i] == 0) {
@@ -272,16 +282,16 @@ int main( int argc, char** argv)
                         m_id = 1+((h_M[i]-1)/32);
                         m_upper = 32*m_id;
                     }
+                    printf( "\n > batch-2\n" );
+                    m_id_j = m_id;
                 }
                 if (h_M[i] > m_upper) {
-                    if (m_upper == 8) {
-                        m_id = 1+((h_M[i]-1)/32);
-                        m_upper = 32*m_id;
-                        if (itest+i < nlf) {
-                            batchCount_0 = batch_sizes1[m_id];
-                        } else {
-                            batchCount_0 = batch_sizes2[m_id];
-                        }
+                    m_id = 1+((h_M[i]-1)/32);
+                    m_upper = 32*m_id;
+                    if (itest+i < nlf) {
+                        batchCount_0 = batch_sizes1[m_id];
+                    } else {
+                        batchCount_0 = batch_sizes2[m_id];
                     }
                     break;
                 }
@@ -385,6 +395,7 @@ int main( int argc, char** argv)
                 magma_time = magma_sync_wtime( opts.queue ) - magma_time;
                 magma_perf = gflops / magma_time;
                 total_gpu += magma_time;
+                total_batch += batchCount;
             
                 if ( opts.lapack ) {
                     magma_dgetvector(total_size_Y, d_Y, 1, h_Ymagma, 1, opts.queue );
@@ -459,9 +470,9 @@ int main( int argc, char** argv)
                            magma_error, (okay ? "ok" : "failed"), itest,batchCount_0);
                 }
                 else {
-                    printf("  %10lld %5lld,%5lld %5lld,%5lld   %7.2f (%7.2f)     ---   (  ---  )     --- (itest=%d, batchCount0=%d)\n",
+                    printf("  %10lld %5lld,%5lld %5lld,%5lld   %7.2f (%7.2f)     ---   (  ---  )     --- (itest=%d, batchCount0=%d, m_id=%d(%d:%d))\n",
                            (long long) batchCount, (long long)min_M, (long long) max_M, (long long)min_N, (long long) max_N,
-                           magma_perf,  1000.*magma_time, itest, batchCount_0);
+                           magma_perf,  1000.*magma_time, itest, batchCount_0, m_id_j, (m_id_j == 0 ? 1 : 1+32*(m_id_j-1)), (m_id_j == 0 ? 8 : 32*m_id_j));
                 }
                 for (i=0; i<batchCount; i++) {
                     h_M[i] = h_N[i] = 0;
@@ -469,6 +480,7 @@ int main( int argc, char** argv)
                 if (h_M[batchCount] != 0) {
                     h_M[0] = h_M[batchCount];
                     h_N[0] = h_N[batchCount];
+                    //printf( " save: h_M[0]=h_M[%d]=%d\n",batchCount,h_M[0]);
                     h_M[batchCount] = 0;
                     h_N[batchCount] = 0;
                 }
@@ -489,7 +501,7 @@ int main( int argc, char** argv)
             printf( "\n" );
         }
     }
-    printf( "\n Total time: %.2e seconds on a GPU, %.2e seconds with CPUs\n\n",total_gpu,total_cpu );
+    printf( "\n Total time: %.2e seconds on a GPU, %.2e seconds with CPUs (total count=%d)\n\n",total_gpu,total_cpu,total_batch );
     fclose(fp);
 
     // free resources
