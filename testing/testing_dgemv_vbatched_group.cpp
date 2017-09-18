@@ -132,23 +132,39 @@ int main( int argc, char** argv)
     printf( " ntest=%d+%d (%d+%d)\n",ntest1,ntest2,nlf,num_sizes);
 
     // find more balanced batch sizes
-    int *batch_sizes1 = (int*)calloc(4, sizeof(int));
+    int max_M_global = 0;
+    for ( int itest = 0; itest < nlf; itest++) {
+        int id, m, n;
+        fscanf(fp, "%d %d %d\n",&id,&n,&m);
+        max_M_global = max(max_M_global, m);
+    }
+    int m_count = 1 + ((max_M_global+31) / 32);
+    fclose(fp);
+
+    // reopen file
+    fp = fopen("sizes_sorted.dat","r");
+    fscanf(fp, "%d %d\n",&num_sizes,&nlf);
+
+    int *batch_sizes1 = (int*)calloc(m_count, sizeof(int));
     for ( int itest = 0; itest < nlf; itest++) {
         int id, m, n;
         fscanf(fp, "%d %d %d\n",&id,&n,&m);
         if (m <= 8) {
             batch_sizes1[0] ++;
-        } else if (m <= 32) {
-            batch_sizes1[1] ++;
-        } else if (m <= 64) {
-            batch_sizes1[2] ++;
         } else {
-            batch_sizes1[3] ++;
+            batch_sizes1[1+(m/32)] ++;
         }
     }
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < m_count; i++) {
         int count = (batch_sizes1[i]+batchCount_0-1)/batchCount_0;
         if (count > 1) {
+            #if 1
+            if (batch_sizes1[i]%batchCount_0 < batchCount_0/2) {
+                batch_sizes1[i] = (batch_sizes1[i]+count-2)/(count-1);
+            } else {
+                batch_sizes1[i] = (batch_sizes1[i]+count-1)/count;
+            }
+            #else
             int opt1 = (batch_sizes1[i]+count-1)/count;
             int opt2 = (batch_sizes1[i]+count-2)/(count-1);
             if (iabs(opt1-batchCount_0) < iabs(opt2-batchCount_0)) {
@@ -156,26 +172,30 @@ int main( int argc, char** argv)
             } else {
                 batch_sizes1[i] = opt2;
             }
+            #endif
         }
     }
 
-    int *batch_sizes2 = (int*)calloc(4, sizeof(int));
+    int *batch_sizes2 = (int*)calloc(m_count, sizeof(int));
     for ( int itest = nlf; itest < num_sizes; itest++) {
         int id, m, n;
         fscanf(fp, "%d %d %d\n",&id,&n,&m);
         if (m <= 8) {
             batch_sizes2[0] ++;
-        } else if (m <= 32) {
-            batch_sizes2[1] ++;
-        } else if (m <= 64) {
-            batch_sizes2[2] ++;
         } else {
-            batch_sizes2[3] ++;
+            batch_sizes1[1+(m/32)] ++;
         }
     }
     for (int i = 0; i < 4; i++) {
         int count = (batch_sizes2[i]+batchCount_0-1)/batchCount_0;
         if (count > 1) {
+            #if 1
+            if (batch_sizes1[i]%batchCount_0 < batchCount_0/2) {
+                batch_sizes1[i] = (batch_sizes1[i]+count-2)/(count-1);
+            } else {
+                batch_sizes1[i] = (batch_sizes1[i]+count-1)/count;
+            }
+            #else
             int opt1 = (batch_sizes2[i]+count-1)/count;
             int opt2 = (batch_sizes2[i]+count-2)/(count-1);
             if (iabs(opt1-batchCount_0) < iabs(opt2-batchCount_0)) {
@@ -183,6 +203,7 @@ int main( int argc, char** argv)
             } else {
                 batch_sizes2[i] = opt2;
             }
+            #endif
         }
     }
     fclose(fp);
@@ -191,6 +212,7 @@ int main( int argc, char** argv)
     fp = fopen("sizes_sorted.dat","r");
     fscanf(fp, "%d %d\n",&num_sizes,&nlf);
 
+    int m_id = 0;
     int m_upper = 8;
     double total_gpu = 0.0, total_cpu = 0.0;
     batchCount_0 = batch_sizes1[0];
@@ -244,36 +266,21 @@ int main( int argc, char** argv)
 
                 if (itest+i == nlf) {
                     if (h_M[i] <= 8) {
+                        m_id = 0;
                         m_upper = 8;
-                    } else if (h_M[i] <= 32) {
-                        m_upper = 32;
-                    } else if (h_M[i] <= 64) {
-                        m_upper = 64;
                     } else {
-                        m_upper = 10000;
+                        m_id = 1+((h_M[i]-1)/32);
+                        m_upper = 32*m_id;
                     }
                 }
                 if (h_M[i] > m_upper) {
                     if (m_upper == 8) {
-                        m_upper = 32;
+                        m_id = 1+((h_M[i]-1)/32);
+                        m_upper = 32*m_id;
                         if (itest+i < nlf) {
-                            batchCount_0 = batch_sizes1[1];
+                            batchCount_0 = batch_sizes1[m_id];
                         } else {
-                            batchCount_0 = batch_sizes2[1];
-                        }
-                    } else if (m_upper == 32) {
-                        m_upper = 64;
-                        if (itest+i < nlf) {
-                            batchCount_0 = batch_sizes1[2];
-                        } else {
-                            batchCount_0 = batch_sizes2[2];
-                        }
-                    } else if (m_upper == 64) {
-                        m_upper = 10000;
-                        if (itest+i < nlf) {
-                            batchCount_0 = batch_sizes1[3];
-                        } else {
-                            batchCount_0 = batch_sizes2[3];
+                            batchCount_0 = batch_sizes2[m_id];
                         }
                     }
                     break;
