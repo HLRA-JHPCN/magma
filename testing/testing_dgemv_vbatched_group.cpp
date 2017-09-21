@@ -319,6 +319,8 @@ int main( int argc, char** argv)
     TESTING_CHECK( magma_dmalloc_cpu(&h_Y, total_size_Y) );
     TESTING_CHECK( magma_dmalloc_cpu(&h_Ymagma, total_size_Y) );
 
+    printf( " total: %d GEMVs in %d batchs\n",total_batch,num_batch );
+    printf( " total_size_A = %d, total_size_X = %d, total_size_Y = %d\n",total_size_A_dev,total_size_X,total_size_Y );
     TESTING_CHECK( magma_dmalloc(&d_A, total_size_A_dev) );
     TESTING_CHECK( magma_dmalloc(&d_X, total_size_X) );
     TESTING_CHECK( magma_dmalloc(&d_Y, total_size_Y) );
@@ -480,7 +482,7 @@ int main( int argc, char** argv)
     total_size_A_dev = 0;
     total_size_X = 0;     total_size_Y = 0;
     total_batch = 0;
-    int num_queues = 10;
+    int num_queues = opts.nqueue;
     magma_queue_t *queues = (magma_queue_t*)malloc(num_queues * sizeof(magma_queue_t));
     magma_device_t cdev;
     magma_getdevice( &cdev );
@@ -520,6 +522,7 @@ int main( int argc, char** argv)
     magma_time = magma_sync_wtime( opts.queue ) - magma_time;
     magma_perf = gflops / magma_time;
     total_gpu  = magma_time;
+    printf( "\n total: %d GEMVs in %d batchs on %d queues\n",total_batch,num_batch,num_queues );
     printf( "\n Total time: %.2e seconds (%.2f/%.2e = %.2f Gflop/s) on a GPU\n\n",
                 total_gpu, gflops,total_gpu, magma_perf );
  
@@ -634,6 +637,15 @@ int main( int argc, char** argv)
     magma_free_cpu( h_N );
     magma_free_cpu( h_incx );
     magma_free_cpu( h_incy );
+
+    magma_free_cpu( sizes_A );
+    magma_free_cpu( sizes_X );
+    magma_free_cpu( sizes_Y );
+    magma_free_cpu( max_M );
+    magma_free_cpu( max_N );
+    magma_free_cpu( min_M );
+    magma_free_cpu( min_N );
+    magma_free_cpu( h_batch_count );
 
     magma_free_cpu( Anorm );
     magma_free_cpu( Xnorm );
