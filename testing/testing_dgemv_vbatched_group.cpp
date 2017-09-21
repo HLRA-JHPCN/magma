@@ -364,9 +364,6 @@ int main( int argc, char** argv)
             }
             batchCount = min(batchCount_0, num_sizes - itest);
         }
-        //if (m_id_j != m_id) {
-        //    printf( "\n" );
-        //}
         m_id_j = m_id;
         int i;
         for (i = 0; i < batchCount; i++) {
@@ -387,7 +384,6 @@ int main( int argc, char** argv)
                     m_id = 1+((h_M[total_batch+i]-1)/32);
                     m_upper = 32*m_id;
                 }
-                //printf( "\n > batch-2\n" );
                 m_id_j = m_id;
             }
             if (h_M[total_batch+i] > m_upper) {
@@ -484,7 +480,6 @@ int main( int argc, char** argv)
     total_size_A_dev = 0;
     total_size_X = 0;     total_size_Y = 0;
     total_batch = 0;
-//num_batch = 2;
     int num_queues = 5;
     magma_queue_t *queues = (magma_queue_t*)malloc(num_queues * sizeof(magma_queue_t));
     magma_device_t cdev;
@@ -497,20 +492,6 @@ int main( int argc, char** argv)
         batchCount = h_batch_count[iid];
          
         #if 1
-/*h_A_array[0] = &d_A[total_size_A_dev];
-h_X_array[0] = &d_X[total_size_X];
-h_Y_array[0] = &d_Y[total_size_Y];
-for (int i = 0; i < min(batchCount,10); i++) {
-    magma_dprint_gpu(h_M[total_batch+i],h_N[total_batch+i],h_A_array[i],h_M[total_batch+i], opts.queue);
-    magma_dprint_gpu(h_N[total_batch+i],1,h_X_array[i],h_N[total_batch+i], opts.queue);
-    magma_dprint_gpu(h_M[total_batch+i],1,h_Y_array[i],h_M[total_batch+i], opts.queue);
-
-    if (i < batchCount-1) {
-        h_A_array[i+1] = h_A_array[i] + h_N[total_batch+i] * h_M[total_batch+i];
-        h_X_array[i+1] = h_X_array[i] + h_N[total_batch+i] * h_incx[total_batch+i];
-        h_Y_array[i+1] = h_Y_array[i] + h_M[total_batch+i] * h_incy[total_batch+i];
-    }
-}*/
         magmablas_dgemv_vbatched_max_nocheck(
                          MagmaNoTrans, &d_M[total_batch], &d_N[total_batch],
                          alpha, &d_A_array[total_batch], &d_ldda[total_batch],
@@ -526,9 +507,6 @@ for (int i = 0; i < min(batchCount,10); i++) {
                          beta,  d_Y_array, d_incy,
                          batchCount, opts.queue);
         #endif
-//for (int i = 0; i < min(batchCount,10); i++) {
-//    magma_dprint_gpu(h_M[total_batch+i],1,h_Y_array[i],h_M[total_batch+i], opts.queue);
-//}
         total_size_A_dev += sizes_A[iid];
         total_size_X += sizes_X[iid];
         total_size_Y += sizes_Y[iid];
@@ -599,17 +577,11 @@ for (int i = 0; i < min(batchCount,10); i++) {
             #endif
             for (magma_int_t s=0; s < batchCount; s++)
             {
-//printf( " -- %d (%dx%d)--\n",total_batch+s,h_M[total_batch+s],h_N[total_batch+s] );
-//magma_dprint(h_M[total_batch+s],h_N[total_batch+s],h_A_array[s],h_M[total_batch+s]);
-//magma_dprint(h_N[total_batch+s],1,h_X_array[s],h_N[total_batch+s]);
-//magma_dprint(h_M[total_batch+s],1,h_Y_array[s],h_M[total_batch+s]);
-
                 blasf77_dgemv( lapack_trans_const(MagmaNoTrans),
                                &h_M[total_batch+s], &h_N[total_batch+s],
                                &alpha, h_A_array[s], &h_M[total_batch+s],
                                        h_X_array[s], &h_incx[total_batch+s],
                                &beta,  h_Y_array[s], &h_incy[total_batch+s] );
-//magma_dprint(h_M[total_batch+s],1,h_Y_array[s],h_M[total_batch+s]);
             }
             #if !defined (BATCHED_DISABLE_PARCPU) && defined(_OPENMP)
             magma_set_lapack_numthreads(nthreads);
@@ -628,9 +600,6 @@ for (int i = 0; i < min(batchCount,10); i++) {
             h_Y_tmp = &h_Y[total_size_Y];
             h_Ymagma_tmp = h_Ymagma;
             for (int s=0; s < batchCount; s++){
-//printf( " -- error %d --\n",s );
-//magma_dprint(h_M[total_batch+s],1,h_Y_tmp,h_M[total_batch+s]);
-//magma_dprint(h_M[total_batch+s],1,h_Ymagma_tmp,h_M[total_batch+s]);
                 normalize = sqrt(double(h_N[total_batch+s]+2))*Anorm[s]*Xnorm[s] + 2*Ynorm[s];
                 if (normalize == 0)
                     normalize = 1;
