@@ -480,7 +480,7 @@ int main( int argc, char** argv)
     total_size_A_dev = 0;
     total_size_X = 0;     total_size_Y = 0;
     total_batch = 0;
-    int num_queues = 5;
+    int num_queues = 10;
     magma_queue_t *queues = (magma_queue_t*)malloc(num_queues * sizeof(magma_queue_t));
     magma_device_t cdev;
     magma_getdevice( &cdev );
@@ -520,8 +520,8 @@ int main( int argc, char** argv)
     magma_time = magma_sync_wtime( opts.queue ) - magma_time;
     magma_perf = gflops / magma_time;
     total_gpu  = magma_time;
-    printf( "\n Total time: %.2e seconds on a GPU, %.2e seconds with CPUs (total count=%d)\n\n",
-                total_gpu,total_cpu,total_batch );
+    printf( "\n Total time: %.2e seconds (%.2f Gflop/s) on a GPU\n\n",
+                total_gpu,magma_perf );
  
     // ----------- //
     // Check error //
