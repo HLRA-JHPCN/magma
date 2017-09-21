@@ -520,8 +520,8 @@ int main( int argc, char** argv)
     magma_time = magma_sync_wtime( opts.queue ) - magma_time;
     magma_perf = gflops / magma_time;
     total_gpu  = magma_time;
-    printf( "\n Total time: %.2e seconds (%.2f Gflop/s) on a GPU\n\n",
-                total_gpu,magma_perf );
+    printf( "\n Total time: %.2e seconds (%.2f/%.2e = %.2f Gflop/s) on a GPU\n\n",
+                total_gpu, gflops,total_gpu, magma_perf );
  
     // ----------- //
     // Check error //
