@@ -145,7 +145,6 @@ void test1(magma_opts *opts) {
 void test2(magma_opts *opts) {
     real_Double_t  magma_time;
     magma_int_t ione = 1;
-    magma_int_t incx  = 1;
     magma_int_t ISEED[4] = {0,0,0,1};
 
     int iam_mpi, num_mpi;
@@ -156,8 +155,6 @@ void test2(magma_opts *opts) {
     int num_proc_node = opts->nsub;
     if (num_proc_node <= 0) num_proc_node = 4;
     int iam_gpu = (opts->offset)+num_gpu*(iam_mpi%num_proc_node);
-
-    double c_mone = -1.0;
 
     magma_queue_t queue[MagmaMaxGPUs];
     printf( "\n %d: set/gpu CPU <-> GPU",iam_mpi );
@@ -273,7 +270,6 @@ void test2(magma_opts *opts) {
 void test3(magma_opts *opts) {
     real_Double_t  magma_time;
     magma_int_t ione = 1;
-    magma_int_t incx  = 1;
     magma_int_t ISEED[4] = {0,0,0,1};
 
     double c_mone = -1.0;
@@ -586,7 +582,6 @@ void test6(magma_opts *opts) {
     real_Double_t  magma_time;
     magma_int_t ISEED[4] = {0,0,0,1};
 
-    double c_mone = -1.0;
     double c_one  =  1.0;
     magma_int_t ione = 1;
 
@@ -597,7 +592,7 @@ void test6(magma_opts *opts) {
     MPI_Comm_size( MPI_COMM_WORLD, &num_mpi );
     int iam_gpu = num_gpu*(iam_mpi%num_proc_node);
 
-    printf( " processor %d uses GPU %d:%d\n",iam_mpi,num_gpu*(iam_mpi%num_proc_node),num_gpu*(1+(iam_mpi%num_proc_node))-1 );
+    printf( " processor %d uses GPU %d:%d\n",iam_mpi,iam_gpu,iam_gpu+num_gpu-1 );
     if (iam_mpi == 0) {
         printf( " Allgatherv(GPU <-> GPU), %d procs/node\n\n",num_proc_node );
         printf( "%% M       MB         Set GB/s (ms)  Get GB/s (ms)\n" );
@@ -610,7 +605,6 @@ void test6(magma_opts *opts) {
 
         magma_int_t m = opts->msize[itest];
         magma_int_t mloc = (m+num_mpi-1)/num_mpi;
-        magma_int_t mloc_d, disp_d;
         
         int *recvcounts = (int*)malloc(num_mpi * sizeof(int));
         int *displs = (int*)malloc((1+num_mpi) * sizeof(int));
@@ -623,6 +617,7 @@ void test6(magma_opts *opts) {
         mloc = recvcounts[iam_mpi];
 
         /* Initialize the matrices */
+        magma_setdevice(iam_gpu);
         TESTING_CHECK( magma_dmalloc_pinned( &gX, m ) );
         TESTING_CHECK( magma_dmalloc_pinned( &hX, m ) );
         TESTING_CHECK( magma_dmalloc_pinned( &hXloc, mloc ) );
@@ -637,7 +632,9 @@ void test6(magma_opts *opts) {
 
             TESTING_CHECK( magma_dmalloc( &dX[d], m ) );
             TESTING_CHECK( magma_dmalloc( &dXloc[d], mloc ) );
-            magma_dsetvector( mloc, &gX[displs[iam_mpi]], 1, dXloc[d], 1 );
+            //magma_dsetvector( mloc, &gX[displs[iam_mpi]], 1, dXloc[d], 1 );
+            magma_dsetvector_async( mloc, &gX[displs[iam_mpi]], 1, dXloc[d], 1, queue[d] );
+            magma_queue_sync( queue[d] );
         }
         magma_setdevice(iam_gpu);
         for (int d=0; d<num_gpu; d++) {
@@ -675,7 +672,7 @@ void test6(magma_opts *opts) {
                 magma_dsetvector_async( m, hX, 1, dX[d], 1, queue[d] );
             }
             for (int d=0; d<num_gpu; d++) {
-                magma_setdevice((num_gpu*(iam_mpi%num_proc_node) + d));
+                magma_setdevice(iam_gpu + d);
                 magma_queue_sync( queue[d] );
             }
         }
@@ -701,19 +698,19 @@ void test6(magma_opts *opts) {
             fflush( stdout );
         }
         for (int d=0; d<num_gpu; d++) {
-            magma_setdevice((num_gpu*(iam_mpi%num_proc_node) + d));
+            magma_setdevice(iam_gpu + d);
             magma_queue_destroy( queue[d] );
             magma_event_destroy( event[d] );
             magma_free( dX[d] );
             magma_free( dXloc[d] );
         }
-        magma_setdevice(num_gpu*(iam_mpi%num_proc_node));
+        magma_setdevice(iam_gpu);
         for (int d=0; d<num_gpu; d++) {
             magma_free( dBuffer[d] );
         }
         free(displs); free(recvcounts);
-        magma_free( dX );
-        magma_free( dXloc );
+        //magma_free( dX );
+        //magma_free( dXloc );
         magma_free_pinned( hX );
         magma_free_pinned( gX );
     }
