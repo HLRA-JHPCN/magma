@@ -21,6 +21,10 @@
 #include "flops.h"
 #include "magma.h"
 #include "magma_lapack.h"
+#if defined(_OPENMP)
+#include <omp.h>
+#include "../control/magma_threadsetting.h"  // internal header
+#endif
 
 void test1(magma_opts *opts);
 void test2(magma_opts *opts);
@@ -144,21 +148,32 @@ void test2(magma_opts *opts) {
     magma_int_t incx  = 1;
     magma_int_t ISEED[4] = {0,0,0,1};
 
+    int iam_mpi, num_mpi;
+    MPI_Comm_rank( MPI_COMM_WORLD, &iam_mpi );
+    MPI_Comm_size( MPI_COMM_WORLD, &num_mpi );
+
+    int num_gpu = opts->ngpu;
+    int num_proc_node = opts->nsub;
+    if (num_proc_node <= 0) num_proc_node = 4;
+    int iam_gpu = (opts->offset)+num_gpu*(iam_mpi%num_proc_node);
+
     double c_mone = -1.0;
 
-    int num_gpus = opts->ngpu;
     magma_queue_t queue[MagmaMaxGPUs];
-    printf( "\n set/gpu CPU <-> GPU" );
-    for (int d=0; d<num_gpus; d++) {
-        magma_setdevice(d);
-        magma_queue_create( &queue[d] );
-        printf( ",%d",d );
+    printf( "\n %d: set/gpu CPU <-> GPU",iam_mpi );
+    for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
+        int dd=d%num_proc_node;
+        magma_setdevice(dd);
+        magma_queue_create( &queue[dd] );
+        printf( ",%d",dd );
     }
     printf( "\n\n" );
 
-    printf( "%% M       MB         Set GB/s (ms)  Get GB/s (ms)\n" );
-    printf( "%%================================================\n" );
-    fflush( stdout );
+    if (iam_mpi == 0) {
+        printf( "%% M       MB         Set GB/s (ms)  Get GB/s (ms)\n" );
+        printf( "%%================================================\n" );
+        fflush( stdout );
+    }
     for( int itest = 0; itest < opts->ntest; ++itest ) {
         double *X[MagmaMaxGPUs];
         magmaDouble_ptr dX[MagmaMaxGPUs];
@@ -166,48 +181,91 @@ void test2(magma_opts *opts) {
         magma_int_t Xm = opts->msize[itest];
         magma_int_t sizeX = Xm;
 
-        for (int d=0; d<num_gpus; d++) {
-            //TESTING_MALLOC_PIN( X[d],  double, sizeX );
-            //TESTING_MALLOC_DEV( dX[d], double, sizeX );
+        for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
             /* Initialize the matrices */
-            TESTING_CHECK( magma_dmalloc_pinned( &X[d],  sizeX ) );
-            TESTING_CHECK( magma_dmalloc( &dX[d], sizeX ) );
-            lapackf77_dlarnv( &ione, ISEED, &sizeX, X[d] );
+            int dd=d%num_proc_node;
+            magma_setdevice(dd);
+            TESTING_CHECK( magma_dmalloc_pinned( &X[dd],  sizeX ) );
+            TESTING_CHECK( magma_dmalloc( &dX[dd], sizeX ) );
+            lapackf77_dlarnv( &ione, ISEED, &sizeX, X[dd] );
         }
 
         double mbytes = ((double)sizeof(double)*Xm)/1e6;
-        printf( "%6d %7.2f ", Xm, mbytes );
-        magma_time = magma_sync_wtime( NULL );
+        if (iam_mpi == 0) {
+            printf( "%6d %7.2f ", Xm, mbytes );
+        }
+        /* synch all GPUs */
+        for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
+            int dd=d%num_proc_node;
+            magma_queue_sync( queue[dd] );
+        }
+        /* do Set */
+        magma_time = magma_wtime();
         for( int iter = 0; iter < opts->niter; ++iter ) {
-            for (int d=0; d<num_gpus; d++) {
-                magma_setdevice(d);
-                magma_dsetvector_async( Xm, X[d], 1, dX[d], 1, queue[d] );
+            for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
+                int dd=d%num_proc_node;
+                magma_setdevice(dd);
+                magma_dsetvector_async( Xm, X[dd], 1, dX[dd], 1, queue[dd] );
             }
         }
-        magma_time = magma_sync_wtime( NULL ) - magma_time;
-        printf( "    %7.2f ", ((double)opts->niter * mbytes)/(1000.*magma_time) );
-        printf( "(%.2f)", (1000.*magma_time)/((double)opts->niter) );
+        /* synch all GPUs */
+        for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
+            int dd=d%num_proc_node;
+            magma_queue_sync( queue[dd] );
+        }
+        magma_time = magma_wtime() - magma_time;
+        if (iam_mpi == 0) {
+            printf( "    %7.2f ", ((double)opts->niter * mbytes)/(1000.*magma_time) );
+            printf( "(%.2f)", (1000.*magma_time)/((double)opts->niter) );
+        }
 
+
+        /* synch all GPUs */
+        for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
+            int dd=d%num_proc_node;
+            magma_queue_sync( queue[dd] );
+        }
+        /* do Get */
         magma_time = magma_sync_wtime( NULL );
         for( int iter = 0; iter < opts->niter; ++iter ) {
-            for (int d=0; d<num_gpus; d++) {
-                magma_setdevice(d);
-                magma_dgetvector_async( Xm, dX[d], 1, X[d], 1, queue[d] );
+            #define DISABLE_PARCPU
+            #if !defined (DISABLE_PARCPU) && defined(_OPENMP)
+            magma_int_t nthreads = magma_get_lapack_numthreads();
+            magma_set_lapack_numthreads(1);
+            magma_set_omp_numthreads(num_gpu);
+            #pragma omp parallel for schedule(dynamic)
+            #endif
+            for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
+                int dd=d%num_proc_node;
+                magma_setdevice(dd);
+                magma_dgetvector_async( Xm, dX[dd], 1, X[dd], 1, queue[dd] );
             }
+            #if !defined (DISABLE_PARCPU) && defined(_OPENMP)
+            magma_set_lapack_numthreads(nthreads);
+            #endif
+        }
+        /* synch all GPUs */
+        for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
+            int dd=d%num_proc_node;
+            magma_queue_sync( queue[dd] );
         }
         magma_time = magma_sync_wtime( NULL ) - magma_time;
-        printf( "  %7.2f ", ((double)opts->niter * mbytes)/(1000.*magma_time) );
-        printf( "(%.2f)\n", (1000.*magma_time)/((double)opts->niter) );
-
-        for (int d=0; d<num_gpus; d++) {
-            magma_free_pinned( X[d] );
-            magma_free( dX[d] );
+        if (iam_mpi == 0) {
+            printf( "  %7.2f ", ((double)opts->niter * mbytes)/(1000.*magma_time) );
+            printf( "(%.2f)\n", (1000.*magma_time)/((double)opts->niter) );
+        }
+        for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
+            int dd=d%num_proc_node;
+            magma_setdevice(dd);
+            magma_free_pinned( X[dd] );
+            magma_free( dX[dd] );
         }
         fflush( stdout );
     }
-    for (int d=0; d<num_gpus; d++) {
-        magma_setdevice(d);
-        magma_queue_destroy( queue[d] );
+    for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
+        int dd=d%num_proc_node;
+        magma_setdevice(dd);
+        magma_queue_destroy( queue[dd] );
     }
 }
 
@@ -579,7 +637,7 @@ void test6(magma_opts *opts) {
 
             TESTING_CHECK( magma_dmalloc( &dX[d], m ) );
             TESTING_CHECK( magma_dmalloc( &dXloc[d], mloc ) );
-            magma_dsetvector_async( mloc, &gX[displs[iam_mpi]], 1, dXloc[d], 1, queue[d] );
+            magma_dsetvector( mloc, &gX[displs[iam_mpi]], 1, dXloc[d], 1 );
         }
         magma_setdevice(iam_gpu);
         for (int d=0; d<num_gpu; d++) {
@@ -590,6 +648,7 @@ void test6(magma_opts *opts) {
         if (iam_mpi == 0) {
             printf( "%6d %7.2f ", m, mbytes );
         }
+        MPI_Barrier(MPI_COMM_WORLD);
         magma_time = magma_sync_wtime( NULL );
         for( int iter = 0; iter < opts->niter; ++iter ) {
             // all-reduce to GPU0
@@ -620,20 +679,26 @@ void test6(magma_opts *opts) {
                 magma_queue_sync( queue[d] );
             }
         }
+        MPI_Barrier(MPI_COMM_WORLD);
         magma_time = magma_sync_wtime( NULL ) - magma_time;
 
         if (iam_mpi == 0) {
             printf( "    %7.2f ", ((double)opts->niter * mbytes)/(1000.*magma_time) );
             printf( "(%.2f)", (1000.*magma_time)/((double)opts->niter) );
-            if (opts->check != 0) {
-                double work[1], beta = -(double)num_gpu;
-                blasf77_daxpy( &m, &beta, gX, &ione, hX, &ione );
-                double magma_error = lapackf77_dlange( "F", &m, &ione, hX, &m, work );
-                printf( ", error=%.2e", magma_error );
+        }
+        if (opts->check != 0) {
+            double work[1], beta = -(double)num_gpu;
+            blasf77_daxpy( &m, &beta, gX, &ione, hX, &ione );
+            double local_error = lapackf77_dlange( "F", &m, &ione, hX, &m, work );
+            double error;
+            MPI_Allreduce(&local_error, &error, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+            if (iam_mpi == 0) {
+                printf( ", error=%.2e", error );
             }
+        }
+        if (iam_mpi == 0) {
             printf( "\n" );
             fflush( stdout );
-
         }
         for (int d=0; d<num_gpu; d++) {
             magma_setdevice((num_gpu*(iam_mpi%num_proc_node) + d));
