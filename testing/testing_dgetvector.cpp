@@ -379,25 +379,31 @@ void test3(magma_opts *opts) {
                 }
 
                 // peer copy
-                if (cudaDeviceEnablePeerAccess( dest, 0 ) == cudaSuccess) {
-                    int canAccessPeer;
-                    cudaDeviceCanAccessPeer(&canAccessPeer, source, dest);
-                    if (canAccessPeer == cudaSuccess) {
+                magma_setdevice(source);
+
+                int canAccessPeer;
+                cudaDeviceCanAccessPeer(&canAccessPeer, source, dest);
+                //if (canAccessPeer == cudaSuccess) {
+                if (canAccessPeer == 1) {
+                    #if 1
+                    if (cudaDeviceEnablePeerAccess( dest, 0 ) == cudaSuccess) {
+                    #endif
                         magma_time = magma_sync_wtime( NULL );
                         for( int iter = 0; iter < opts->niter; ++iter ) {
-                            magma_setdevice(source);
                             cudaMemcpyPeerAsync( dX[dest], dest, dX[source], source, Xm*sizeof(double),
                                                  magma_queue_get_cuda_stream( queue[source] ) );
                         }
                         magma_time = magma_sync_wtime( NULL ) - magma_time;
                         printf( "  %7.2f ", ((double)opts->niter * mbytes)/(1000.*magma_time) );
                         printf( "(%.2f)\n", (1000.*magma_time)/((double)opts->niter) );
+                    #if 1
+                        cudaDeviceDisablePeerAccess( dest );
                     } else {
-                        printf( " cudaCanAccessPeer(failed)\n" );
+                        printf( " cudaDeviceEnablePeerAccess(%d->%d: failed)\n",source,dest );
                     }
-                    cudaDeviceDisablePeerAccess( dest );
+                    #endif
                 } else {
-                    printf( " cudaDeviceEnablePeerAccess(failed)\n" );
+                    printf( " cudaCanAccessPeer(%d->%d: failed)\n",source,dest );
                 }
                 fflush( stdout );
 
