@@ -37,12 +37,26 @@ void test6(magma_opts *opts);
    -- Testing dgemm
 */
 int main( int argc, char** argv) {
-    MPI_Init( &argc, &argv );
-    TESTING_CHECK( magma_init() );
-
     int iam_mpi, num_mpi;
+    #if 1
+    MPI_Init( &argc, &argv );
+    #else
+    int provided = MPI_THREAD_FUNNELED;
+    MPI_Init_thread( &argc, &argv, MPI_THREAD_MULTIPLE, &provided );
     MPI_Comm_rank( MPI_COMM_WORLD, &iam_mpi );
     MPI_Comm_size( MPI_COMM_WORLD, &num_mpi );
+    if (provided != MPI_THREAD_FUNNELED && iam_mpi == 0) {
+        switch(provided) {
+            case MPI_THREAD_SINGLE:     printf( "\n ** Only provided SINGLE **\n" ); break;
+            case MPI_THREAD_FUNNELED:   printf( "\n ** Only provided FUNNELED **\n" ); break;
+            case MPI_THREAD_SERIALIZED: printf( "\n ** Only provided SERIALIZED **\n" ); break;
+            case MPI_THREAD_MULTIPLE:   printf( "\n ** Only provided MULTIPLE **\n" ); break;
+            default: printf( "??\n"); break;
+        }
+    }
+    #endif
+    TESTING_CHECK( magma_init() );
+
     int name_len;
     char proc_name[300];
     MPI_Get_processor_name( proc_name, &name_len );
@@ -156,15 +170,17 @@ void test2(magma_opts *opts) {
     if (num_proc_node <= 0) num_proc_node = 4;
     int iam_gpu = (opts->offset)+num_gpu*(iam_mpi%num_proc_node);
 
+    int num_gpu_node = 4;
+    magma_device_t devices[ MagmaMaxGPUs ];
+    magma_getdevices( devices, MagmaMaxGPUs, &num_gpu_node );
+
     magma_queue_t queue[MagmaMaxGPUs];
-    printf( "\n %d: set/gpu CPU <-> GPU",iam_mpi );
+    printf( "\n %d: set/gpu CPU <-> GPU(%d:%d) (%d procs/node, %d gpus/node)",iam_mpi,iam_gpu,iam_gpu+num_gpu-1,num_proc_node,num_gpu_node );
     for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
-        int dd=d%num_proc_node;
+        int dd=d%num_gpu_node;
         magma_setdevice(dd);
         magma_queue_create( &queue[dd] );
-        printf( ",%d",dd );
     }
-    printf( "\n\n" );
 
     if (iam_mpi == 0) {
         printf( "%% M       MB         Set GB/s (ms)  Get GB/s (ms)\n" );
@@ -180,7 +196,7 @@ void test2(magma_opts *opts) {
 
         for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
             /* Initialize the matrices */
-            int dd=d%num_proc_node;
+            int dd=d%num_gpu_node;
             magma_setdevice(dd);
             TESTING_CHECK( magma_dmalloc_pinned( &X[dd],  sizeX ) );
             TESTING_CHECK( magma_dmalloc( &dX[dd], sizeX ) );
@@ -193,23 +209,25 @@ void test2(magma_opts *opts) {
         }
         /* synch all GPUs */
         for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
-            int dd=d%num_proc_node;
+            int dd=d%num_gpu_node;
             magma_queue_sync( queue[dd] );
         }
         /* do Set */
+        MPI_Barrier(MPI_COMM_WORLD);
         magma_time = magma_wtime();
         for( int iter = 0; iter < opts->niter; ++iter ) {
             for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
-                int dd=d%num_proc_node;
+                int dd=d%num_gpu_node;
                 magma_setdevice(dd);
                 magma_dsetvector_async( Xm, X[dd], 1, dX[dd], 1, queue[dd] );
             }
         }
         /* synch all GPUs */
         for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
-            int dd=d%num_proc_node;
+            int dd=d%num_gpu_node;
             magma_queue_sync( queue[dd] );
         }
+        MPI_Barrier(MPI_COMM_WORLD);
         magma_time = magma_wtime() - magma_time;
         if (iam_mpi == 0) {
             printf( "    %7.2f ", ((double)opts->niter * mbytes)/(1000.*magma_time) );
@@ -219,11 +237,12 @@ void test2(magma_opts *opts) {
 
         /* synch all GPUs */
         for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
-            int dd=d%num_proc_node;
+            int dd=d%num_gpu_node;
             magma_queue_sync( queue[dd] );
         }
         /* do Get */
-        magma_time = magma_sync_wtime( NULL );
+        MPI_Barrier(MPI_COMM_WORLD);
+        magma_time = magma_wtime();
         for( int iter = 0; iter < opts->niter; ++iter ) {
             #define DISABLE_PARCPU
             #if !defined (DISABLE_PARCPU) && defined(_OPENMP)
@@ -233,7 +252,7 @@ void test2(magma_opts *opts) {
             #pragma omp parallel for schedule(dynamic)
             #endif
             for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
-                int dd=d%num_proc_node;
+                int dd=d%num_gpu_node;
                 magma_setdevice(dd);
                 magma_dgetvector_async( Xm, dX[dd], 1, X[dd], 1, queue[dd] );
             }
@@ -243,16 +262,17 @@ void test2(magma_opts *opts) {
         }
         /* synch all GPUs */
         for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
-            int dd=d%num_proc_node;
+            int dd=d%num_gpu_node;
             magma_queue_sync( queue[dd] );
         }
-        magma_time = magma_sync_wtime( NULL ) - magma_time;
+        MPI_Barrier(MPI_COMM_WORLD);
+        magma_time = magma_wtime() - magma_time;
         if (iam_mpi == 0) {
             printf( "  %7.2f ", ((double)opts->niter * mbytes)/(1000.*magma_time) );
             printf( "(%.2f)\n", (1000.*magma_time)/((double)opts->niter) );
         }
         for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
-            int dd=d%num_proc_node;
+            int dd=d%num_gpu_node;
             magma_setdevice(dd);
             magma_free_pinned( X[dd] );
             magma_free( dX[dd] );
@@ -260,7 +280,7 @@ void test2(magma_opts *opts) {
         fflush( stdout );
     }
     for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
-        int dd=d%num_proc_node;
+        int dd=d%num_gpu_node;
         magma_setdevice(dd);
         magma_queue_destroy( queue[dd] );
     }
