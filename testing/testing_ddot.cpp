@@ -19,7 +19,11 @@
 #include "magma_lapack.h"
 #include "magma_operators.h"
 #include "testings.h"
-
+#if defined(_OPENMP)
+#include <omp.h>
+#include "../control/magma_threadsetting.h"  // internal header
+#endif
+#include <cuda_runtime.h>
 
 /* ////////////////////////////////////////////////////////////////////////////
    -- Testing dgemv
@@ -43,9 +47,13 @@ int main(int argc, char **argv)
     opts.parse_opts( argc, argv );
     
     int check = opts.check;
+    int gid0  = opts.offset;
     int ngpu  = opts.ngpu;
+    int max_ngpu;
+    cudaGetDeviceCount( &max_ngpu );
     magma_queue_t queue[ MagmaMaxGPUs ];
-    for( int d = 0; d < ngpu; d++ ) {
+    for (int dd=0; dd<ngpu; dd++) {
+        int d = (gid0+dd)%max_ngpu;
         magma_queue_create( d, &queue[d] );
     }
     switch (opts.version) {
@@ -53,7 +61,7 @@ int main(int argc, char **argv)
     case 2: printf( " DGEMV" ); break;
     case 3: printf( " Ddot" );  break;
     }
-    printf( " with %d GPUs\n",ngpu );
+    printf( " with %d:%d GPUs (max %d)\n",gid0,gid0+ngpu-1,max_ngpu );
     printf("%%   N            Gflop/s (ms)\n");
     printf("%%============================\n");
     for( int itest = 0; itest < opts.ntest; ++itest ) {
@@ -64,7 +72,8 @@ int main(int argc, char **argv)
             TESTING_CHECK( magma_dmalloc_cpu( &X, N ));
             TESTING_CHECK( magma_dmalloc_cpu( &Y, N ));
             
-            for (int d=0; d<ngpu; d++) {
+            for (int dd=0; dd<ngpu; dd++) {
+                int d = (gid0+dd)%max_ngpu;
                 magma_setdevice(d);
                 TESTING_CHECK( magma_dmalloc( &dX[d], N ));
                 TESTING_CHECK( magma_dmalloc( &dY[d], N ));
@@ -81,16 +90,24 @@ int main(int argc, char **argv)
             /* =====================================================================
                Performs operation using cuBLAS / clBLAS
                =================================================================== */
-            for (int d=0; d<ngpu; d++) {
+            for (int dd=0; dd<ngpu; dd++) {
+                int d = (gid0+dd)%max_ngpu;
                 magma_setdevice(d);
                 magma_dsetvector( N, X, ione, dX[d], ione, queue[d] );
                 magma_dsetvector( N, Y, ione, dY[d], ione, queue[d] );
             }
 
             dev_time = magma_wtime();
-            int offset = 0;
-            for (int d=0; d<ngpu; d++) {
-                int nloc = (d < ngpu-1 ? n : N-d*n);
+            //#define DISABLE_PARCPU
+            #if !defined (DISABLE_PARCPU) && defined(_OPENMP)
+            magma_int_t nthreads = magma_get_lapack_numthreads();
+            magma_set_lapack_numthreads(1);
+            magma_set_omp_numthreads(ngpu);
+            #pragma omp parallel for schedule(dynamic)
+            #endif
+            for (int dd=0, offset=0; dd<ngpu; dd++, offset+=n) {
+                int d = (gid0+dd)%max_ngpu;
+                int nloc = (dd < ngpu-1 ? n : N-dd*n);
                 magma_setdevice(d);
 
                 switch (opts.version) {
@@ -136,17 +153,19 @@ int main(int argc, char **argv)
                     }
                     break;
                 }
-
-                offset += nloc;
             }
-            for (int d=0; d<ngpu; d++) {
+            #if !defined (DISABLE_PARCPU) && defined(_OPENMP)
+            magma_set_lapack_numthreads(nthreads);
+            #endif
+            for (int dd=0; dd<ngpu; dd++) {
+                int d = (gid0+dd)%max_ngpu;
                 magma_setdevice(d);
                 magma_queue_sync(queue[d]);
             }
             dev_time = magma_wtime() - dev_time;
             dev_perf = gflops / dev_time;
             
-            printf("%5lld (%d)  %7.2f (%7.2f)",
+            printf("%5lld (%d)  %7.2f (%7.8f)",
                    (long long) N, n, dev_perf, 1000.*dev_time);
             if (check != 0) {
                 double alpha;
@@ -154,7 +173,8 @@ int main(int argc, char **argv)
                               &c_one,  X, &N,
                                        Y, &ione,
                               &c_zero, &alpha, &ione);
-                for (int d=0; d<ngpu; d++) {
+                for (int dd=0; dd<ngpu; dd++) {
+                    int d = (gid0+dd)%max_ngpu;
                     alpha -= Alpha[d][0];
                 }
                 printf( " error=%.2e",alpha );
@@ -164,7 +184,8 @@ int main(int argc, char **argv)
             magma_free_cpu( X );
             magma_free_cpu( Y );
             
-            for (int d = 0; d <ngpu; d++) {
+            for (int dd=0; dd<ngpu; dd++) {
+                int d = (gid0+dd)%max_ngpu;
                 magma_setdevice(d);
                 magma_free( dX[d] );
                 magma_free( dY[d] );
@@ -178,7 +199,8 @@ int main(int argc, char **argv)
         }
     }
 
-    for( int d = 0; d < ngpu; ++d ) {
+    for (int dd=0; dd<ngpu; dd++) {
+        int d = (gid0+dd)%max_ngpu;
         magma_queue_destroy( queue[d] );
     }    
     opts.cleanup();
