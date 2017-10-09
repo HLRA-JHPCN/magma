@@ -253,6 +253,7 @@ printf( " ntest=%d+%d\n",ntest1,ntest2);
 #endif
 #endif
     double total_gpu = 0.0, total_cpu = 0.0;
+    double total_flop = 0.0;
     for( int itest = 0; itest < opts.ntest; ++itest ) {
         for( int iter = 0; iter < opts.niter; ++iter ) {
             M = opts.msize[itest];
@@ -396,7 +397,7 @@ printf( " ntest=%d+%d\n",ntest1,ntest2);
             magma_dsetvector( total_size_Y, h_Y, 1, d_Y, 1, opts.queue );
             
             magma_time = magma_sync_wtime( opts.queue );
-            #define VERSION 1
+            #define VERSION 2 // 1 streamed, 2 batched nocheck, 3 batched check
             #if VERSION==1
             for (int i = 0; i < batchCount; i++) {
                 magma_dgemv( opts.transA, h_M[i], h_N[i],
@@ -421,6 +422,7 @@ printf( " ntest=%d+%d\n",ntest1,ntest2);
             magma_time = magma_sync_wtime( opts.queue ) - magma_time;
             magma_perf = gflops / magma_time;
             total_gpu += magma_time;
+            total_flop += gflops;
             
             if ( opts.lapack ) {
                 magma_dgetvector(total_size_Y, d_Y, 1, h_Ymagma, 1, opts.queue );
@@ -517,7 +519,8 @@ printf( " ntest=%d+%d\n",ntest1,ntest2);
             printf( "\n" );
         }
     }
-    printf( "\n Total time: %.2e seconds on a GPU, %.2e seconds with CPUs\n\n",total_gpu,total_cpu );
+    printf( "\n Total time: %.2e seconds (%.2f Gflop/s) on a GPU, %.2e seconds (%.2f Gflop/s) with CPUs\n\n",
+            total_gpu,total_flop/total_gpu, total_cpu,total_flop/total_cpu );
 #if defined(FROM_FILE) | defined(FROM_SORTED_FILE)
     #if defined(SORT_SIZES)
     free(sizes);
