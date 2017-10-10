@@ -14,6 +14,7 @@
 #include <string.h>
 #include <math.h>
 #include "mpi.h"
+#include "mpi-ext.h"
 #include "cuda_runtime_api.h"
 
 // includes, project
@@ -40,6 +41,8 @@ int main( int argc, char** argv) {
     int iam_mpi, num_mpi;
     #if 1
     MPI_Init( &argc, &argv );
+    MPI_Comm_rank( MPI_COMM_WORLD, &iam_mpi );
+    MPI_Comm_size( MPI_COMM_WORLD, &num_mpi );
     #else
     int provided = MPI_THREAD_FUNNELED;
     MPI_Init_thread( &argc, &argv, MPI_THREAD_MULTIPLE, &provided );
@@ -56,6 +59,27 @@ int main( int argc, char** argv) {
     }
     #endif
     TESTING_CHECK( magma_init() );
+    if (iam_mpi == 0) {
+        printf( "Compile time check : ");
+        #if defined(MPIX_CUDA_AWARE_SUPPORT) && MPIX_CUDA_AWARE_SUPPORT
+        printf( "This MPI library has CUDA-aware support.\n" );
+        #elif defined(MPIX_CUDA_AWARE_SUPPORT) && !MPIX_CUDA_AWARE_SUPPORT
+        printf( "This MPI library does not have CUDA-aware support.\n" );
+        #else
+        printf( "This MPI library cannot determine if there is CUDA-aware support.\n" );
+        #endif /* MPIX_CUDA_AWARE_SUPPORT */
+
+        printf( "Run time check     : " );
+        #if defined(MPIX_CUDA_AWARE_SUPPORT)
+        if (1 == MPIX_Query_cuda_support()) {
+            printf( "This MPI library has CUDA-aware support.\n" );
+        } else {
+            printf( "This MPI library does not have CUDA-aware support.\n" );
+        }
+        #else /* !defined(MPIX_CUDA_AWARE_SUPPORT) */
+        printf( "This MPI library cannot determine if there is CUDA-aware support.\n" );
+        #endif /* MPIX_CUDA_AWARE_SUPPORT */
+    }
 
     int name_len;
     char proc_name[300];
@@ -167,18 +191,25 @@ void test2(magma_opts *opts) {
     MPI_Comm_rank( MPI_COMM_WORLD, &iam_mpi );
     MPI_Comm_size( MPI_COMM_WORLD, &num_mpi );
 
+    int inc = 1;
     int num_gpu = opts->ngpu;
     int num_proc_node = opts->nsub;
     if (num_proc_node <= 0) num_proc_node = 4;
     int iam_gpu = (opts->offset)+num_gpu*(iam_mpi%num_proc_node);
+    if (inc > 1) {
+        iam_gpu = (opts->offset)+(iam_mpi == 0 ? 0 : 3);
+    }
 
     int num_gpu_node = 4;
     magma_device_t devices[ MagmaMaxGPUs ];
     magma_getdevices( devices, MagmaMaxGPUs, &num_gpu_node );
 
     magma_queue_t queue[MagmaMaxGPUs];
-    printf( "\n %d: set/gpu CPU <-> GPU(%d:%d) (%d procs/node, %d gpus/node)\n",iam_mpi,iam_gpu,iam_gpu+num_gpu-1,num_proc_node,num_gpu_node );
-    for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
+    printf( "\n %d: set/gpu CPU <-> GPU(%d:%d:%d) (%d procs/node, %d gpus/node)\n",iam_mpi,
+             iam_gpu%num_gpu_node,inc,(iam_gpu+inc*(num_gpu-1))%num_gpu_node,
+             num_proc_node,num_gpu_node );
+
+    for (int d=iam_gpu; d<iam_gpu+inc*num_gpu; d+=inc) {
         int dd=d%num_gpu_node;
         magma_setdevice(dd);
         magma_queue_create( &queue[dd] );
@@ -196,7 +227,7 @@ void test2(magma_opts *opts) {
         magma_int_t Xm = opts->msize[itest];
         magma_int_t sizeX = Xm;
 
-        for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
+        for (int d=iam_gpu; d<iam_gpu+inc*num_gpu; d+=inc) {
             /* Initialize the matrices */
             int dd=d%num_gpu_node;
             magma_setdevice(dd);
@@ -211,7 +242,7 @@ void test2(magma_opts *opts) {
             printf( "%6d %7.2f ", Xm, mbytes );
         }
         /* synch all GPUs */
-        for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
+        for (int d=iam_gpu; d<iam_gpu+inc*num_gpu; d+=inc) {
             int dd=d%num_gpu_node;
             magma_queue_sync( queue[dd] );
         }
@@ -219,14 +250,14 @@ void test2(magma_opts *opts) {
         MPI_Barrier(MPI_COMM_WORLD);
         magma_time = magma_wtime();
         for( int iter = 0; iter < opts->niter; ++iter ) {
-            for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
+            for (int d=iam_gpu; d<iam_gpu+inc*num_gpu; d+=inc) {
                 int dd=d%num_gpu_node;
                 magma_setdevice(dd);
                 magma_dsetvector_async( Xm, X[dd], 1, dX[dd], 1, queue[dd] );
             }
         }
         /* synch all GPUs */
-        for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
+        for (int d=iam_gpu; d<iam_gpu+inc*num_gpu; d+=inc) {
             int dd=d%num_gpu_node;
             magma_queue_sync( queue[dd] );
         }
@@ -238,7 +269,7 @@ void test2(magma_opts *opts) {
         }
         if (opts->check != 0) {
             double error = -1.0;
-            for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
+            for (int d=iam_gpu; d<iam_gpu+inc*num_gpu; d+=inc) {
                 int dd=d%num_gpu_node;
                 magma_setdevice(dd);
                 magma_dgetvector( Xm, dX[dd], 1, Y, 1 );
@@ -253,15 +284,59 @@ void test2(magma_opts *opts) {
 
 
         /* do Set by copy */
+        int source = iam_gpu%num_gpu_node;
+        magma_setdevice(source);
+        magma_queue_t queue_comm[MagmaMaxGPUs];
+        for (int d=iam_gpu+inc; d<iam_gpu+inc*num_gpu; d+=inc) {
+            int dest=d%num_gpu_node;
+            magma_queue_create( &queue_comm[dest] );
+        }
+        #if 1 // use MemcpyPeer
+        for (int d=iam_gpu+inc; d<iam_gpu+inc*num_gpu; d+=inc) {
+            int dest=d%num_gpu_node;
+            int canAccessPeer;
+            cudaDeviceCanAccessPeer(&canAccessPeer, source, dest);
+            if (canAccessPeer == 1) {
+                if (cudaDeviceEnablePeerAccess( dest, 0 ) != cudaSuccess) {
+                    printf( " cudaDeviceEnablePeerAccess( %d ) failed\n",dest );
+                }
+            } else {
+                printf( "cudaDeviceCanAccessPeer( %d ) failed\n",dest );
+            }
+        }
         MPI_Barrier(MPI_COMM_WORLD);
         magma_time = magma_wtime();
-        int source = iam_gpu%num_gpu_node;
         for( int iter = 0; iter < opts->niter; ++iter ) {
-            magma_setdevice(source);
+            magma_dsetvector_async( Xm, X[source], 1, dX[source], 1, queue[source] );
+            magma_queue_sync( queue[source] );
+            for (int d=iam_gpu+inc; d<iam_gpu+inc*num_gpu; d+=inc) {
+                int dest=d%num_gpu_node;
+                //cudaMemcpyPeerAsync( dX[dest], dest, dX[source], source, Xm*sizeof(double),
+                //                     magma_queue_get_cuda_stream( queue[source] ) );
+                cudaMemcpyPeerAsync( dX[dest], dest, dX[source], source, Xm*sizeof(double),
+                                     magma_queue_get_cuda_stream( queue_comm[dest] ) );
+            }
+        }
+        magma_queue_sync( queue[source] );
+        for (int d=iam_gpu+inc; d<iam_gpu+inc*num_gpu; d+=inc) {
+            int dest=d%num_gpu_node;
+            magma_queue_sync( queue_comm[dest] );
+        }
+        MPI_Barrier(MPI_COMM_WORLD);
+        magma_time = magma_wtime() - magma_time;
+        for (int d=iam_gpu+inc; d<iam_gpu+inc*num_gpu; d+=inc) {
+            int dest=d%num_gpu_node;
+            magma_queue_destroy( queue_comm[dest] );
+            cudaDeviceDisablePeerAccess( dest );
+        }
+        #else // use Memcpy
+        MPI_Barrier(MPI_COMM_WORLD);
+        magma_time = magma_wtime();
+        for( int iter = 0; iter < opts->niter; ++iter ) {
             cudaMemcpyAsync( dX[source], X[source], Xm*sizeof(double), cudaMemcpyHostToDevice,
                              magma_queue_get_cuda_stream( queue[source] ) );
             magma_queue_sync( queue[source] );
-            for (int d=iam_gpu+1; d<iam_gpu+num_gpu; d++) {
+            for (int d=iam_gpu+inc; d<iam_gpu+inc*num_gpu; d+=inc) {
                 int dest=d%num_gpu_node;
                 cudaMemcpyAsync( dX[dest], dX[source], Xm*sizeof(double), cudaMemcpyDeviceToDevice,
                                  magma_queue_get_cuda_stream( queue[dest] ) );
@@ -270,19 +345,20 @@ void test2(magma_opts *opts) {
             }
         }
         /* synch all GPUs */
-        for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
+        for (int d=iam_gpu; d<iam_gpu+inc*num_gpu; d+=inc) {
             int dd=d%num_gpu_node;
             magma_queue_sync( queue[dd] );
         }
         MPI_Barrier(MPI_COMM_WORLD);
         magma_time = magma_wtime() - magma_time;
+        #endif
         if (iam_mpi == 0) {
             printf( " %5.2f ", ((double)opts->niter * mbytes)/(1000.*magma_time) );
             printf( "(%.2f)", (1000.*magma_time)/((double)opts->niter) );
         }
         if (opts->check != 0) {
             double error = -1.0;
-            for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
+            for (int d=iam_gpu; d<iam_gpu+inc*num_gpu; d+=inc) {
                 int dd=d%num_gpu_node;
                 magma_setdevice(dd);
                 magma_dgetvector( Xm, dX[dd], 1, Y, 1 );
@@ -306,7 +382,7 @@ void test2(magma_opts *opts) {
             magma_set_omp_numthreads(num_gpu);
             #pragma omp parallel for schedule(dynamic)
             #endif
-            for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
+            for (int d=iam_gpu; d<iam_gpu+inc*num_gpu; d+=inc) {
                 int dd=d%num_gpu_node;
                 magma_setdevice(dd);
                 magma_dgetvector_async( Xm, dX[dd], 1, X[dd], 1, queue[dd] );
@@ -316,7 +392,7 @@ void test2(magma_opts *opts) {
             #endif
         }
         /* synch all GPUs */
-        for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
+        for (int d=iam_gpu; d<iam_gpu+inc*num_gpu; d+=inc) {
             int dd=d%num_gpu_node;
             magma_queue_sync( queue[dd] );
         }
@@ -331,7 +407,7 @@ void test2(magma_opts *opts) {
         MPI_Barrier(MPI_COMM_WORLD);
         magma_time = magma_wtime();
         for( int iter = 0; iter < opts->niter; ++iter ) {
-            for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
+            for (int d=iam_gpu; d<iam_gpu+inc*num_gpu; d+=inc) {
                 int dd=d%num_gpu_node;
                 magma_setdevice(dd);
                 cudaMemcpyAsync( X[dd], dX[dd], Xm*sizeof(double), cudaMemcpyDeviceToHost,
@@ -339,7 +415,7 @@ void test2(magma_opts *opts) {
             }
         }
         /* synch all GPUs */
-        for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
+        for (int d=iam_gpu; d<iam_gpu+inc*num_gpu; d+=inc) {
             int dd=d%num_gpu_node;
             magma_queue_sync( queue[dd] );
         }
@@ -352,7 +428,7 @@ void test2(magma_opts *opts) {
 
         // free
         magma_free_pinned( Y );
-        for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
+        for (int d=iam_gpu; d<iam_gpu+inc*num_gpu; d+=inc) {
             int dd=d%num_gpu_node;
             magma_setdevice(dd);
             magma_free_pinned( X[dd] );
@@ -360,7 +436,7 @@ void test2(magma_opts *opts) {
         }
         fflush( stdout );
     }
-    for (int d=iam_gpu; d<iam_gpu+num_gpu; d++) {
+    for (int d=iam_gpu; d<iam_gpu+inc*num_gpu; d+=inc) {
         int dd=d%num_gpu_node;
         magma_setdevice(dd);
         magma_queue_destroy( queue[dd] );
@@ -413,16 +489,15 @@ void test3(magma_opts *opts) {
                 printf( "%6d %7.2f ", Xm, mbytes );
 
                 // get/set
-                magma_time = magma_sync_wtime( NULL );
+                magma_time = magma_wtime();
                 for( int iter = 0; iter < opts->niter; ++iter ) {
                     magma_setdevice(source);
-                    magma_dgetvector_async( Xm, dX[source], 1, Y, 1, queue[source] );
-                    magma_queue_sync( queue[source] );
+                    magma_dgetvector( Xm, dX[source], 1, Y, 1 );
 
                     magma_setdevice(dest);
-                    magma_dsetvector_async( Xm, Y, 1, dX[dest], 1, queue[dest] );
+                    magma_dsetvector( Xm, Y, 1, dX[dest], 1 );
                 }
-                magma_time = magma_sync_wtime( NULL ) - magma_time;
+                magma_time = magma_wtime() - magma_time;
                 printf( "  %7.2f ", ((double)opts->niter * mbytes)/(1000.*magma_time) );
                 printf( "(%.2f)", (1000.*magma_time)/((double)opts->niter) );
                 if (opts->check != 0) {
@@ -460,15 +535,11 @@ void test3(magma_opts *opts) {
                 }
 
                 // peer copy
-                magma_setdevice(source);
-
                 int canAccessPeer;
+                magma_setdevice(source);
                 cudaDeviceCanAccessPeer(&canAccessPeer, source, dest);
-                //if (canAccessPeer == cudaSuccess) {
                 if (canAccessPeer == 1) {
-                    #if 1
                     if (cudaDeviceEnablePeerAccess( dest, 0 ) == cudaSuccess) {
-                    #endif
                         magma_time = magma_sync_wtime( NULL );
                         for( int iter = 0; iter < opts->niter; ++iter ) {
                             cudaMemcpyPeerAsync( dX[dest], dest, dX[source], source, Xm*sizeof(double),
@@ -476,13 +547,23 @@ void test3(magma_opts *opts) {
                         }
                         magma_time = magma_sync_wtime( NULL ) - magma_time;
                         printf( "  %7.2f ", ((double)opts->niter * mbytes)/(1000.*magma_time) );
-                        printf( "(%.2f)\n", (1000.*magma_time)/((double)opts->niter) );
-                    #if 1
+                        printf( "(%.2f)", (1000.*magma_time)/((double)opts->niter) );
+                        if (opts->check != 0) {
+                            magma_setdevice(dest);
+                            magma_dgetvector( Xm, dX[dest], 1, Y, 1 );
+
+                            double work[1];
+                            blasf77_daxpy( &Xm, &c_mone, X, &ione, Y, &ione );
+                            double magma_error = lapackf77_dlange( "F", &Xm, &ione, Y, &Xm, work );
+                            printf( ", error=%.2e", magma_error );
+                            // set back to source-GPU
+                            magma_setdevice(source);
+                        }
+                        printf( "\n" );
                         cudaDeviceDisablePeerAccess( dest );
                     } else {
                         printf( " cudaDeviceEnablePeerAccess(%d->%d: failed)\n",source,dest );
                     }
-                    #endif
                 } else {
                     printf( " cudaCanAccessPeer(%d->%d: failed)\n",source,dest );
                 }
@@ -697,9 +778,12 @@ void test6(magma_opts *opts) {
     int num_proc_node = opts->nsub;
     MPI_Comm_rank( MPI_COMM_WORLD, &iam_mpi );
     MPI_Comm_size( MPI_COMM_WORLD, &num_mpi );
-    int iam_gpu = num_gpu*(iam_mpi%num_proc_node);
 
-    printf( " processor %d uses GPU %d:%d\n",iam_mpi,iam_gpu,iam_gpu+num_gpu-1 );
+    int inc = 1;
+    int num_gpu_node = 4;
+    int iam_gpu = num_gpu*(iam_mpi%num_proc_node);
+    if (inc > 1)  iam_gpu = (iam_mpi == 0 ? 0 : 3); // hack
+
     if (iam_mpi == 0) {
         printf( " Allgatherv(GPU <-> GPU), %d procs/node\n\n",num_proc_node );
         printf( "%% M       MB         Set GB/s (ms)  Get GB/s (ms)\n" );
@@ -733,19 +817,35 @@ void test6(magma_opts *opts) {
         magma_queue_t queue[MagmaMaxGPUs];
         magma_event_t event[MagmaMaxGPUs];
         for (int d=0; d<num_gpu; d++) {
-            magma_setdevice(iam_gpu + d);
+            int dd = (iam_gpu+d*inc)%num_gpu_node;
+            magma_setdevice(dd);
+
+            printf( " process-%d setup GPU-%d\n",iam_mpi,dd );
             magma_queue_create( &queue[d] );
             magma_event_create( &event[d] );
 
             TESTING_CHECK( magma_dmalloc( &dX[d], m ) );
             TESTING_CHECK( magma_dmalloc( &dXloc[d], mloc ) );
-            //magma_dsetvector( mloc, &gX[displs[iam_mpi]], 1, dXloc[d], 1 );
             magma_dsetvector_async( mloc, &gX[displs[iam_mpi]], 1, dXloc[d], 1, queue[d] );
             magma_queue_sync( queue[d] );
         }
         magma_setdevice(iam_gpu);
         for (int d=0; d<num_gpu; d++) {
             TESTING_CHECK( magma_dmalloc( &dBuffer[d], mloc ) );
+        }
+        // setup peers
+        for (int d=1; d<num_gpu; d++) {
+            int dd = (iam_gpu+d*inc)%num_gpu_node;
+            int canAccessPeer;
+            magma_setdevice(dd);
+            cudaDeviceCanAccessPeer(&canAccessPeer, dd, iam_gpu);
+            if (canAccessPeer == 1) {
+                if (cudaDeviceEnablePeerAccess( iam_gpu, 0 ) != cudaSuccess) {
+                    printf( " %d:%d: cudaDeviceEnablePeerAccess( %d ) failed\n",iam_mpi,dd,iam_gpu );
+                }
+            } else {
+                printf( "cudaDeviceCanAccessPeer( %d, %d ) failed\n",dd,iam_gpu );
+            }
         }
 
         double mbytes = ((double)sizeof(double)*m)/1e6;
@@ -756,28 +856,60 @@ void test6(magma_opts *opts) {
         magma_time = magma_sync_wtime( NULL );
         for( int iter = 0; iter < opts->niter; ++iter ) {
             // all-reduce to GPU0
+            #if 1 // use MemcpyPeer
+            for (int d=1; d<num_gpu; d++) {
+                int dd = (iam_gpu+inc*d)%num_gpu_node;
+
+                magma_setdevice(dd);
+                cudaMemcpyPeerAsync( dBuffer[d], iam_gpu, dXloc[d], dd, mloc*sizeof(double),
+                                     magma_queue_get_cuda_stream( queue[d] ) );
+                magma_event_record( event[d], queue[d] );
+            }
+            #else
             for (int d=1; d<num_gpu; d++) {
                 magma_setdevice(iam_gpu + d);
                 cudaMemcpyAsync( dBuffer[d], dXloc[d], mloc*sizeof(double), cudaMemcpyDeviceToDevice,
                                  magma_queue_get_cuda_stream( queue[d] ) );
                 magma_event_record( event[d], queue[d] );
             }
+            #endif
             // sum them on GPU0
             magma_setdevice(iam_gpu);
             magmablasSetKernelStream( queue[0] );
             for (int d=1; d<num_gpu; d++) {
+                int dd = (iam_gpu+inc*d)%num_gpu_node;
                 magma_queue_wait_event( queue[0], event[d] );
                 magma_daxpy( mloc, c_one,  dBuffer[d], 1, dXloc[0], 1 );
             }
-            // copy to CPU
-            magma_dgetvector( mloc, dXloc[0], 1, hXloc, 1 );
-            // MPI
-            MPI_Allgatherv( hXloc, mloc, MPI_DOUBLE, hX, recvcounts, displs, MPI_DOUBLE, MPI_COMM_WORLD );
-            // copy to local GPUs
-            for (int d=0; d<num_gpu; d++) {
-                magma_setdevice(iam_gpu + d);
+            #define GPU_AWARE
+            #ifdef GPU_AWARE
+              // MPI
+              magma_queue_sync( queue[iam_gpu] );
+              MPI_Allgatherv( dXloc[0], mloc, MPI_DOUBLE, dX[0], recvcounts, displs, MPI_DOUBLE, MPI_COMM_WORLD );
+            #else
+              // copy to CPU
+              magma_dgetvector( mloc, dXloc[0], 1, hXloc, 1 );
+              // MPI
+              MPI_Allgatherv( hXloc, mloc, MPI_DOUBLE, hX, recvcounts, displs, MPI_DOUBLE, MPI_COMM_WORLD );
+              // copy to local GPUs
+              magma_dsetvector( m, hX, 1, dX[0], 1 );
+            #endif
+            #if 1 // use MemcpyPeer
+            for (int d=1; d<num_gpu; d++) {
+                int dd = (iam_gpu+inc*d)%num_gpu_node;
+                magma_setdevice(dd);
+                cudaMemcpyPeerAsync( dX[d], dd, dX[0], iam_gpu, m*sizeof(double),
+                                     magma_queue_get_cuda_stream( queue[d] ) );
+                //cudaMemcpyAsync( dX[d], dX[0], m*sizeof(double), cudaMemcpyDeviceToDevice,
+                //                 magma_queue_get_cuda_stream( queue[d] ) );
+            }
+            #else
+            for (int d=1; d<num_gpu; d++) {
+                int dd = (iam_gpu+inc*d)%num_gpu_node;
+                magma_setdevice(dd);
                 magma_dsetvector_async( m, hX, 1, dX[d], 1, queue[d] );
             }
+            #endif
             for (int d=0; d<num_gpu; d++) {
                 magma_setdevice(iam_gpu + d);
                 magma_queue_sync( queue[d] );
@@ -791,7 +923,12 @@ void test6(magma_opts *opts) {
             printf( "(%.2f)", (1000.*magma_time)/((double)opts->niter) );
         }
         if (opts->check != 0) {
-            double work[1], beta = -(double)num_gpu;
+            double work[1], beta = -(double)(1+(opts->niter)*(num_gpu-1));
+            #ifdef GPU_AWARE
+            magma_setdevice(iam_gpu);
+            magma_dgetvector( m, dX[0], 1, hX, 1 );
+            #endif
+for (int ii=0; ii<m; ii++) printf( "\n %d: %.2e - %.2e = %.2e\n",ii,gX[ii],hX[ii],gX[ii]-hX[ii] );
             blasf77_daxpy( &m, &beta, gX, &ione, hX, &ione );
             double local_error = lapackf77_dlange( "F", &m, &ione, hX, &m, work );
             double error;
@@ -805,19 +942,21 @@ void test6(magma_opts *opts) {
             fflush( stdout );
         }
         for (int d=0; d<num_gpu; d++) {
-            magma_setdevice(iam_gpu + d);
+            int dd = (iam_gpu+d*inc)%num_gpu_node;
+            magma_setdevice(dd);
             magma_queue_destroy( queue[d] );
             magma_event_destroy( event[d] );
             magma_free( dX[d] );
             magma_free( dXloc[d] );
+            if (d != 0) { 
+                cudaDeviceDisablePeerAccess( iam_gpu );
+            }
         }
         magma_setdevice(iam_gpu);
         for (int d=0; d<num_gpu; d++) {
             magma_free( dBuffer[d] );
         }
         free(displs); free(recvcounts);
-        //magma_free( dX );
-        //magma_free( dXloc );
         magma_free_pinned( hX );
         magma_free_pinned( gX );
     }
