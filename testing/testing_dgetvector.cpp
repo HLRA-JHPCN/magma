@@ -14,7 +14,12 @@
 #include <string.h>
 #include <math.h>
 #include "mpi.h"
-#include "mpi-ext.h"
+            
+#define GPU_AWARE
+#ifdef GPU_AWARE
+ #include "mpi-ext.h"
+#endif
+
 #include "cuda_runtime_api.h"
 
 // includes, project
