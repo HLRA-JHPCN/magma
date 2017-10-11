@@ -886,10 +886,9 @@ void test6(magma_opts *opts) {
                 magma_queue_wait_event( queue[0], event[d] );
                 magma_daxpy( mloc, c_one,  dBuffer[d], 1, dXloc[0], 1 );
             }
-            #define GPU_AWARE
             #ifdef GPU_AWARE
               // MPI
-              magma_queue_sync( queue[iam_gpu] );
+              magma_queue_sync( queue[0] );
               MPI_Allgatherv( dXloc[0], mloc, MPI_DOUBLE, dX[0], recvcounts, displs, MPI_DOUBLE, MPI_COMM_WORLD );
             #else
               // copy to CPU
