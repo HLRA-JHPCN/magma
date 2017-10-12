@@ -882,14 +882,12 @@ void test6(magma_opts *opts) {
             magma_setdevice(iam_gpu);
             magmablasSetKernelStream( queue[0] );
             for (int d=1; d<num_gpu; d++) {
-                int dd = (iam_gpu+inc*d)%num_gpu_node;
                 magma_queue_wait_event( queue[0], event[d] );
                 magma_daxpy( mloc, c_one,  dBuffer[d], 1, dXloc[0], 1 );
             }
-            #define GPU_AWARE
             #ifdef GPU_AWARE
               // MPI
-              magma_queue_sync( queue[iam_gpu] );
+              magma_queue_sync( queue[0] );
               MPI_Allgatherv( dXloc[0], mloc, MPI_DOUBLE, dX[0], recvcounts, displs, MPI_DOUBLE, MPI_COMM_WORLD );
             #else
               // copy to CPU
@@ -933,7 +931,6 @@ void test6(magma_opts *opts) {
             magma_setdevice(iam_gpu);
             magma_dgetvector( m, dX[0], 1, hX, 1 );
             #endif
-for (int ii=0; ii<m; ii++) printf( "\n %d: %.2e - %.2e = %.2e\n",ii,gX[ii],hX[ii],gX[ii]-hX[ii] );
             blasf77_daxpy( &m, &beta, gX, &ione, hX, &ione );
             double local_error = lapackf77_dlange( "F", &m, &ione, hX, &m, work );
             double error;
