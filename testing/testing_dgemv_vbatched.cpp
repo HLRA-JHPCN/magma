@@ -134,7 +134,7 @@ int main( int argc, char** argv)
     magma_device_t cdev;
     magma_getdevice( &cdev );
 
-    int num_queues = 5;
+    int num_queues = opts.nqueue;
     magma_queue_t *queues = (magma_queue_t*)malloc(num_queues * sizeof(magma_queue_t));
     for (int i=0; i<num_queues; i++) {
         magma_queue_create( cdev, &queues[i] );
@@ -194,7 +194,7 @@ int main( int argc, char** argv)
     opts.niter = 1;
 printf( " ntest=%d+%d\n",ntest1,ntest2);
 
-#define MALLOC_ONCE
+//#define MALLOC_ONCE
 #if defined(MALLOC_ONCE)
     magma_int_t sizeAd_max = 0;
     magma_int_t sizeA_max = 0;
@@ -283,6 +283,7 @@ printf( " ntest=%d+%d\n",ntest1,ntest2);
                 batchCount = min(batchCount_0, (num_sizes-nlf) - batchCount_0*(itest-ntest1));
             }
 #endif
+            #define VERSION 3 // 1 streamed, 2 batched nocheck, 3 batched check
             for (int i = 0; i < batchCount; i++) {
 #if defined(FROM_FILE) | defined(FROM_SORTED_FILE)
                 #if defined(SORT_SIZES)
@@ -322,6 +323,7 @@ printf( " ntest=%d+%d\n",ntest1,ntest2);
                 
                 h_ldda[i] = magma_roundup( h_lda[i], opts.align );  // multiple of 32 by default
                 
+                #if VERSION!=3
                 total_size_A_cpu += h_N[i] * h_lda[i];
                 total_size_A_dev += h_N[i] * h_ldda[i];
                 
@@ -329,8 +331,25 @@ printf( " ntest=%d+%d\n",ntest1,ntest2);
                 total_size_Y += Yn[i] * h_incy[i];
                 
                 gflops += FLOPS_DGEMV( h_M[i], h_N[i]) / 1e9;
+                #endif
             }
             
+            #if VERSION==3
+            for (int i = 0; i < batchCount; i++) {
+                h_M[i] = max_M;
+                h_N[i] = max_N;
+                h_ldda[i] = magma_roundup( h_lda[i], opts.align );  // multiple of 32 by default
+
+                total_size_A_cpu += h_N[i] * h_lda[i];
+                total_size_A_dev += h_N[i] * h_ldda[i];
+
+                total_size_X += Xn[i] * h_incx[i];
+                total_size_Y += Yn[i] * h_incy[i];
+
+                gflops += FLOPS_DGEMV( h_M[i], h_N[i]) / 1e9;
+            }
+            #endif
+
             #if defined(MALLOC_ONCE)
             assert(total_size_A_dev <= sizeAd_max);
             assert(total_size_A_cpu <= sizeA_max);
@@ -397,7 +416,6 @@ printf( " ntest=%d+%d\n",ntest1,ntest2);
             magma_dsetvector( total_size_Y, h_Y, 1, d_Y, 1, opts.queue );
             
             magma_time = magma_sync_wtime( opts.queue );
-            #define VERSION 2 // 1 streamed, 2 batched nocheck, 3 batched check
             #if VERSION==1
             for (int i = 0; i < batchCount; i++) {
                 magma_dgemv( opts.transA, h_M[i], h_N[i],
@@ -412,6 +430,13 @@ printf( " ntest=%d+%d\n",ntest1,ntest2);
                              beta,  d_Y_array, d_incy,
                              batchCount,
                              max_M, max_N, opts.queue);
+            #elif VERSION==3
+            magmablas_dgemv_batched(opts.transA, 
+                             max_M, max_N,
+                             alpha, d_A_array, h_ldda[0],
+                                    d_X_array, h_incx[0],
+                             beta,  d_Y_array, h_incy[0],
+                             batchCount, opts.queue);
             #else
             magmablas_dgemv_vbatched(opts.transA, d_M, d_N,
                              alpha, d_A_array, d_ldda,
